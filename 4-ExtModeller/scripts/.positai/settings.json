@@ -1,0 +1,20 @@
+{
+  "model": {
+    "webSearch": true,
+    "id": "claude-opus-4-6",
+    "provider": "positai",
+    "thinkingEffort": "medium"
+  },
+  "permission": {
+    "external_directory": {
+      "/Users/dominice/OneDrive - University of Illinois - Urbana/Projects/Peruvian Blattodea/Cockroaches in a coal mine/AmAni/*": "allow"
+    },
+    "read": {
+      "*.R": "allow",
+      "*": "allow",
+      "*.md": "allow",
+      "*.txt": "allow",
+      "*/.gitignore": "allow"
+    }
+  }
+}

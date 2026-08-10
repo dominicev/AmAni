@@ -1,0 +1,10 @@
+{
+  "sandbox": {
+    "enabled": false
+  },
+  "permission": {
+    "external_directory": {
+      "C:/Users/dominice/OneDrive - University of Illinois - Urbana/Projects/Peruvian Blattodea/Cockroaches in a coal mine/AmAni/2-ModellingAnimals/scripts/utils/*": "allow"
+    }
+  }
+}

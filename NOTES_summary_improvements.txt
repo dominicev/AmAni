@@ -1,0 +1,174 @@
+=====================================================================
+ AmAni Summary & Pipeline Improvements — Notes
+ Created: 2026-03-31
+=====================================================================
+
+1. TAXON LABEL CAPITALIZATION (DONE)
+   - Added organism_label() in AmAni.summarize.R
+   - "cockroaches" (curated) → "Cockroaches.Curated" in all plots
+   - "allRoaches" → "cockroaches" in all plots
+   - All other organisms → Title Case (e.g., "beetles" → "Beetles")
+   - Applied to: summarize_all(), summarize_organism(), all compilation
+     figures, slope graph, gamma expansion bar chart
+
+2. SLOPE PATH LABEL OVERLAP (DONE)
+   - Replaced geom_text() with ggrepel::geom_text_repel() in the
+     observed-vs-gamma slope graph
+   - Labels now auto-repel to avoid overlap
+   - Also fixed gamma expansion ratio bar chart (removed coord_flip(),
+     swapped x/y aesthetics)
+
+3. GROUP-BASED SUMMARY FILTERING (DONE)
+   - summarize_all() now accepts include= and group= parameters
+   - Predefined groups in ORGANISM_GROUPS list:
+       insects:     cockroaches, allRoaches, beetles, lepidoptera, hemiptera,
+                    odonata, butterflies, hymenoptera, bees, flies, dungbeetles
+       vertebrates: antbirds, finches, frogs, mammals, tyrannidae, squamates
+       birds:       antbirds, finches, tyrannidae
+       herps:       frogs, squamates
+   - Usage: summarize_all(group = "insects")
+             summarize_all(include = c("butterflies", "frogs"))
+
+4. PLANT VERIFICATION PIPELINE (DONE)
+   - Added run_plant_model() in AmAni.manager.R
+   - Uses plant species data as pseudo-animal input
+   - Purpose: verify that the pipeline returns a gamma richness close
+     to the known plant richness (self-consistency check)
+   - Usage: run_plant_model()
+   - Entry in AmAni.run.R is commented out (uncomment to run)
+
+5. SPATIAL EXTENT OVERLAP PLOT (DONE)
+   - Added plot_spatial_extent_overlap() in AmAni.summarize.R
+   - Shows side-by-side histogram of animal vs plant species by
+     number of grid cells occupied (1, 2, 3, ... up to max_cells)
+   - Selects the N organisms with smallest animal spatial extents
+   - Requires plotdata_spatial_extent_distributions.rds (saved per
+     organism after pipeline re-run) or falls back to plant-only data
+     from plotdata_plant_extent_model.rds
+   - Added saveRDS in 02_animalAnalysis.R (line ~503) to save
+     combined_distribution and morphotype_distribution as RDS
+   - NOTE: Re-run the animal model for each organism to generate the
+     new RDS files. Until then, only plant data is shown.
+   - Usage: plot_spatial_extent_overlap()
+            plot_spatial_extent_overlap(group = "insects", max_cells = 10)
+
+6. WORKFLOW COMPILATION DIAGRAM (DONE)
+   - Added compile_workflow_diagram() in AmAni.summarize.R
+   - Produces a ggplot-based flowchart showing the major pipeline stages
+   - Three lanes: Plants (top), Animals (middle), Deforestation (bottom)
+   - Annotated with example values from a chosen organism
+   - Usage: compile_workflow_diagram("butterflies")
+            compile_workflow_diagram("cockroaches")
+   - Saves PDF to output/cross_organism_summary/
+
+7. FILES MODIFIED
+   - AmAni.summarize.R: organism_label(), ORGANISM_GROUPS, group filtering,
+     ggrepel slope labels, plot_spatial_extent_overlap(),
+     compile_workflow_diagram()
+   - AmAni.manager.R: run_plant_model()
+   - AmAni.run.R: plant verification entry, group summary examples,
+     new function call examples
+   - 2-ModellingAnimals/scripts/02_animalAnalysis.R: saveRDS for
+     spatial extent distributions
+
+=====================================================================
+ REMAINING / FUTURE WORK
+=====================================================================
+
+- Re-run the animal model pipeline for all organisms to generate the
+  plotdata_spatial_extent_distributions.rds files (needed for full
+  animal vs plant comparison in plot_spatial_extent_overlap())
+- Run plant verification (run_plant_model()) and check gamma estimate
+- Consider adding additional organism groups to ORGANISM_GROUPS
+- Add curated datasets for more insects
+- RANGE REDUCTION TRACKING (DONE — see details below)
+
+8. RANGE REDUCTION TRACKING IN EXTINCTION MODEL (DONE)
+   - Thresholds: 20%, 50%, 75%, 90%, 95%, 99%, 100% (extinct)
+   - Changes to simulation_functions.R:
+     * Added compute_range_reduction(), count_range_thresholds(),
+       precompute_baseline_ranges() helper functions (base-R only,
+       safe for parallel workers)
+     * simulateExtinctionFromDeforestation() now returns
+       species_range_reduction (per-species data.frame) and
+       threshold_counts (named integer vector)
+     * SEFD_rep_parallel() precomputes baseline ranges, passes them
+       to each replicate, and includes 7 threshold count columns
+       (n_reduced_20..n_reduced_100) in the per-replicate output
+   - Changes to 01_simulate_neutral.R:
+     * After single detailed runs, computes and saves
+       neutral_species_range_reduction.csv (per-species, per-scenario)
+     * Prints threshold count summary to console
+   - Changes to 02_simulate_clustered.R:
+     * Same as neutral: saves clustered_species_range_reduction.csv
+   - Changes to 03_summarize_results.R:
+     * Loads replicate threshold columns and saves
+       summary_range_reduction_thresholds.csv (median + IQR per model × scenario)
+     * Loads per-species CSVs and saves
+       summary_range_reduction_single_run.csv and
+       combined_species_range_reduction.csv
+   - NOTE: Existing .RData caches will NOT have the new threshold columns.
+     Delete existing .RData files or re-run the parallel replicates to
+     generate the new columns. The 03_summarize script handles the case
+     gracefully when columns are missing.
+   - Plotting: deferred to later. The CSV outputs are sufficient for now.
+
+
+
+most recent attempted improvement is summarized as follows:
+
+Recommendation: analytical Monte Carlo
+The key insight is that gamma richness is deterministic given the scaling factor and the plant distribution. Inside simulateScaledSpeciesRichness, the species count is just:
+
+gamma = sum(ceiling(plant_distribution_binned$n * scaling_factor))
+
+
+
+
+The spatial simulation decides WHERE species go, but not HOW MANY there are. So you don't need to run the simulation at all for the error bounds — just vary the scaling factor and sum.
+
+The approach
+Get joint parameter uncertainty from both NLS fits — vcov(lognorm_fit) for the plant fit and vcov(lognorm_fit_animal) for the animal fit. These 3×3 covariance matrices describe how (amplitude, meanlog, sdlog) co-vary.
+
+Draw 10,000 parameter combinations from multivariate normals for each. For each draw:
+
+Compute plant_fit_max_draw = a_plant * dlnorm(mode, meanlog, sdlog) where mode = exp(meanlog - sdlog^2)
+Compute animal_max_draw similarly from the animal parameter draw
+scaling_factor_draw = animal_max_draw / plant_fit_max_draw
+gamma_draw = sum(ceiling(plant_distribution_binned$n * scaling_factor_draw))
+Take quantiles of the 10,000 gamma richness values → your CI.
+
+Why this is better
+Current	Proposed
+Compute	200 bootstraps + 3 full spatial sims	10K draws of pure arithmetic
+Runtime	Hours	Seconds
+Uncertainty sources	Plant curve shape only	Plant NLS params + animal NLS params jointly
+Scaling factor	Fixed	Varies with each draw
+Bound width	Tight	Wider, more realistic
+You'd still run one spatial simulation for the best estimate (needed for the downstream spatial output). The bounds calculation becomes essentially free.
+
+Want me to implement this? I'd modify 02_animalAnalysis.R to replace the bootstrap + 2 extra simulations with the analytical Monte Carlo approach, keeping the diagnostic plot of the plant fit and the single best-estimate simulation.
+
+
+
+----------------------------------------------------
+Ways to improve the gamma diversity estimates:
+
+2. Incorporate predicted total alpha diversity as a way to adjust the amplitude parameter of the logit model. So, we could add on "predicted species" to each site and have that contribute to the calculation. Combining this with information from the above correction could maximize the prediction.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

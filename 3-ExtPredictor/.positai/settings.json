@@ -1,0 +1,25 @@
+{
+  "model": {
+    "id": "claude-opus-4-6",
+    "provider": "positai",
+    "thinkingEffort": "high",
+    "webSearch": false
+  },
+  "permission": {
+    "bash": {
+      "ls *": "allow",
+      "head *": "allow",
+      "wc *": "allow",
+      "cd \"C:/Users/dominice/OneDrive - University of Illinois - Urbana/Projects/Peruvian Blattodea/Cockroaches in a coal mine/AmAni/3-ExtPredictor/deforestTileOutStats/\"": "allow",
+      "echo *": "allow",
+      "sed 's/^w//'": "allow",
+      "sed 's/\\.done$//'": "allow",
+      "sort *": "allow",
+      "tail *": "allow"
+    },
+    "external_directory": {
+      "C:/Users/dominice/OneDrive - University of Illinois - Urbana/Projects/Peruvian Blattodea/Cockroaches in a coal mine/AmAni/4-ExtModeller/*": "allow",
+      "*": "allow"
+    }
+  }
+}

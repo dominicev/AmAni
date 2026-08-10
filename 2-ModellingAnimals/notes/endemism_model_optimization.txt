@@ -1,0 +1,81 @@
+Endemism-Plant Correlation Model Optimization
+===============================================
+Date: 2026-03-24
+Status: Planning (not yet implemented)
+
+CONTEXT
+-------
+The endemism-plant linear model (rawEndemismCalculator.R) is the foundation
+for scaling plant endemism patterns to animal endemism. The R-squared of this
+correlation directly affects confidence in the extinction projections.
+Improving this correlation (without overfitting) strengthens the analysis.
+
+
+PROPOSED APPROACHES
+-------------------
+
+1. Filter animal data by sampling effort (IMPLEMENTED)
+   - Already available via min_occurrences parameter in run_animal_model().
+   - Uses the top Nth percentile of species-rich cells to derive an
+     occurrence threshold. Only cells above this threshold are used in the lm().
+   - Risk: Low. Removes noisy data without altering the predictor.
+   - Caveat: Aggressive thresholds reduce n; avoid n < ~20.
+
+2. Limit taxonomic scope of plant data
+   - Subset plant endemism to specific clades (e.g., angiosperms only,
+     gymnosperms + angiosperms, specific families).
+   - Rationale: Some animal groups may covary more strongly with specific
+     plant clades (e.g., herbivorous insects with their host plant families,
+     understory birds with angiosperm-dominated vegetation).
+   - Risk: Moderate. This adds a degree of freedom -- the choice of clade
+     must be justified a priori (ecological reasoning), not selected post-hoc
+     to maximize R-squared.
+   - Implementation note: Would require recomputing plant endemism from
+     Stage 0/1 outputs with a taxonomic filter. The current pipeline
+     computes plant endemism across all vascular plants.
+
+3. Joint filtering of plant + animal data
+   - Combine approach 1 and 2: restrict to cells with well-sampled animal
+     data AND well-sampled plant data (e.g., cells above a plant occurrence
+     threshold as well).
+   - Risk: Highest overfitting risk. Restricting both predictor and response
+     to best-case data may produce an optimistic R-squared that does not
+     generalize to the cells where predictions matter most (poorly-sampled
+     ones).
+   - Mitigation: Use hold-out validation or cross-validation to assess
+     generalizability.
+
+
+MODEL COMPARISON STRATEGY
+-------------------------
+Rather than manually iterating over strategies and checking R-squared,
+implement a systematic comparison framework:
+
+- Define candidate strategies as a list (each specifying an animal filter
+  and/or a plant taxonomic filter).
+- For each strategy, fit lm(animal_endemism ~ plant_endemism) and record:
+    * R-squared
+    * AIC (preferred over R-squared because it penalizes model complexity)
+    * n (number of grid cells used)
+    * Residual diagnostics (normality, heteroscedasticity)
+- Present results as a comparison table.
+
+AIC NOTES:
+- AIC is more appropriate than raw R-squared for comparing models fit on
+  different subsets, because it penalizes for the effective number of
+  parameters.
+- However, AIC comparisons are strictly valid only when models are fit to
+  the SAME response data. If subsets change which cells are included, use
+  cross-validation (e.g., leave-one-out or k-fold) for a fair comparison.
+- BIC is an alternative that penalizes complexity more heavily and may be
+  preferable given the small n expected in most subsets.
+
+IMPLEMENTATION IDEAS:
+- New script: 2-ModellingAnimals/scripts/utils/optimizeEndemismModel.R
+- Input: grid_sf (with plant endemism), roach_grid (with animal occurrences),
+  a list of strategy configs.
+- Output: comparison table (CSV) + diagnostic plots (PDF).
+- Could be called from AmAni.run.R as an optional step before the main
+  pipeline, or as a standalone diagnostic tool.
+- Consider wrapping in a function: optimize_endemism_model(organism, strategies)
+  that returns the best strategy config for use in run_animal_model().

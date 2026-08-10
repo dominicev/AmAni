@@ -1,0 +1,52 @@
+NOTES — 4-ExtModeller — 2026-03-20
+====================================
+
+CURRENT RESULTS (as of 2026-03-20)
+-----------------------------------
+
+Species extinctions (median out of 100 replicates, 2,940 total species):
+
+  Scenario        | Neutral | Shifted | Clustered
+  ----------------+---------+---------+----------
+  FreqOver        |   58    |  43.5   |   20
+  FreqBoundary    |   50    |  39     |   17
+  FreqUnder       |  353    | 252     |  149
+
+Clustered < Shifted < Neutral in all cases. This is counterintuitive
+but explained by the concentration effect: clustered/shifted deforestation
+focuses damage on fewer grid cells, leaving more cells untouched as refugia,
+while neutral (uniform random) spreads damage across many more unique cells.
+
+Nearly all extinctions (87-100%) are single-grid endemic species.
+
+
+
+THINGS TO DO NEXT
+------------------
+
+E. SIMULATE RANGE SHIFTS (CLIMATE CHANGE)
+
+   Not yet started. Would involve shifting species ranges (e.g.,
+   upslope/poleward) and re-running the extinction simulation on the
+   shifted ranges.
+
+
+F. USE FUTURE DEFORESTATION PROJECTIONS
+
+   The RAISG data includes future deforestation scenarios
+   (trend/optimistic/pessimistic) in:
+     3-ExtPredictor/data/raisg-shapefiles/deforestacion_futura_2025/
+   These were explored in 01_prep_deforestation.R but never used
+   in the simulation pipeline. Could be used to create forward-looking
+   frequency tables.
+
+
+FILES REFERENCE
+----------------
+
+  scripts/01_simulate_neutral.R       Spatially random deforestation
+  scripts/02_simulate_clustered.R     Weighted + toroidal-shifted null
+  scripts/03_summarize_results.R      Comparison tables and plots
+  scripts/utils/simulation_functions.R  Shared functions (all models)
+  output/                              RData caches, CSVs, PDFs
+  AGENTS.md                           Full project memory

@@ -1,0 +1,29 @@
+nohup: ignoring input
+terra 1.8.86
+Working directory: /home/dominice/Desktop/AmAni/3-ExtPredictor/area_job 
+Raster dimensions: 125279 rows x 150347 cols
+CRS: WGS 84 
+
+Step 1: Counting cells...
+|---------|---------|---------|---------|=========================================                                          [checkpoint] Saved cell counts to output/checkpoint_cell_counts.rds 
+Deforested cells: 514,868,669 
+Total non-NA cells: 514,868,669 
+
+Step 2: Computing cell areas and deforested area sum...
+(this is the slow step)
+|---------|---------|---------|---------|=========================================                                          |---------|---------|---------|---------|=========================================                                          Done in 935.4 seconds
+[checkpoint] Saved deforested area to output/checkpoint_defor_area.rds 
+Total deforested area: 454,509.4 km2
+
+Step 3: Computing total study-area extent...
+|---------|---------|---------|---------|=========================================                                          |---------|---------|---------|---------|=========================================                                          |---------|---------|---------|---------|=========================================                                          |---------|---------|---------|---------|=========================================                                          Done in 1433.6 seconds
+[checkpoint] Saved study-area extent to output/checkpoint_extent_area.rds 
+Total study-area extent: 454,509.4 km2
+
+=== AREA ACCOUNTING ===
+Total deforested area:   454,509.4 km2
+Total study-area extent: 454,509.4 km2
+Deforested fraction:     100.00%
+
+Saved to output/area_accounting.csv
+Done.

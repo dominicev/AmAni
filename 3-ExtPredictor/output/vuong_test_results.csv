@@ -1,0 +1,4 @@
+"regime","comparison","test_statistic","p_two_sided","favors"
+"boundary_filtered","powerlaw_vs_lognormal",-1.25556843701544,0.20927248090079,"lognormal"
+"underfiltered","powerlaw_vs_lognormal",-2.85980752295989,0.00423898202156141,"lognormal"
+"overfiltered","powerlaw_vs_lognormal",-1.25556907056392,0.20927225107566,"lognormal"
