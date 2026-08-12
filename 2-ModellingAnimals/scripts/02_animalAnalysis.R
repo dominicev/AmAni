@@ -430,9 +430,6 @@ species_counts_joined <- grid_sf %>%
     by = "grid_id"
   )
 
-#if RawEndemism Calculator was skipped we need to calculate some things here
-if(.amani_skipRawEndemism){ overlap_bbox <- st_bbox(animal_endemism_filtered) }
-
 species_counts_overlap <- st_crop(species_counts_joined, overlap_bbox)
 
 filtered_species_counts <- species_counts_overlap %>%

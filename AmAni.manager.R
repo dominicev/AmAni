@@ -587,7 +587,9 @@ run_animal_model <- function(organism,
                              filter_plant_completeness = NULL,
                              fit_params = c("amplitude"),
                              estimateBounds = TRUE,
-                             skipRawEndemism = FALSE) {
+                             skipRawEndemism = FALSE,
+                             customOutputFolderPrefix = NULL,
+                             customOutputFolderSuffix = NULL) {
   # Run the animal modelling pipeline (Stage 2).
   #
   # The entry-point script is chosen automatically based on data_file extension:
@@ -741,9 +743,28 @@ run_animal_model <- function(organism,
   )
   verify_upstream("Stage 2 (animal modelling)", upstream_files)
   
-  
   # Set up organism-specific output directory
   dirs <- organism_dirs(organism)
+  if (!is.null(customOutputFolderPrefix)) {
+    dirs$animal_model <- sub(
+      "(^|[/\\\\])output([/\\\\])",
+      paste0("\\1", customOutputFolderPrefix, "output\\2"),
+      dirs$animal_model
+    )
+  }
+  if (!is.null(customOutputFolderSuffix)) {
+    # Append the suffix to the organism directory (parent of animal_model),
+    # e.g. p_output/ORGANISM -> p_output/ORGANISM_suffix
+    org_dir <- dirname(dirs$animal_model)
+    dirs$animal_model <- file.path(
+      file.path(dirname(org_dir), paste0(basename(org_dir), customOutputFolderSuffix)),
+      basename(dirs$animal_model)
+    )
+  }
+  
+  
+  
+  
   if (!dir.exists(dirs$animal_model)) dir.create(dirs$animal_model, recursive = TRUE)
   archive_outputs(dirs$animal_model)
   

@@ -237,7 +237,63 @@ modelAnimal<-function(
 
   if(exists("scaled_results", envir = .GlobalEnv) && !redoeverything){
     NULL}else{
-      if(.amani_skipRawEndemism) NULL else source("scripts/utils/rawEndemismCalculator.R")
+      if(.amani_skipRawEndemism){
+        # rawEndemismCalculator.R is skipped here, but 02_animalAnalysis.R
+        # (sourced below, in the global env) still consumes a few objects that
+        # only that script produces. Recreate just those so the skip path stays
+        # self-consistent:
+        #   grid_sf_clipped          -> available_grid_ids (02:736)
+        #   overlap_bbox             -> plant cropping (02:359, 375, 380, 385, 436)
+        #   animal_endemism_filtered -> endemism correlation (02:434, 1975+)
+
+        # Grid geometry — preserve Stage 0 grid_ids from the endemism data.
+        grid_sf <- rename_grid_id(endemismData)
+
+        # Amazon boundary, used to clip the grid to cells inside the basin.
+        amazon_shp <- sf::st_read(
+          paste0(dirname(getwd()),
+                 "/0-CuratingPlantData/data/amazon_shapefile/amazon_sensulatissimo_gmm_v1.shp"),
+          quiet = TRUE
+        ) |> sf::st_transform(sf::st_crs(grid_sf))
+        grid_sf_clipped <- sf::st_intersection(grid_sf, amazon_shp)
+
+        # Single-cell animal endemism per grid cell (identical to the calculator).
+        animal_grid <<- rename_grid_id(animal_grid)
+        animal_endemism <- animal_grid %>%
+          dplyr::group_by(Morphotype) %>%
+          dplyr::mutate(total_occurrences = dplyr::n()) %>%
+          dplyr::ungroup() %>%
+          dplyr::filter(total_occurrences == 1) %>%
+          dplyr::group_by(grid_id) %>%
+          dplyr::summarize(animal_endemism_count = dplyr::n(), .groups = "drop")
+        animal_endemism <- rename_grid_id(animal_endemism)
+
+        animal_endemism_grid <- sf::st_join(
+          grid_sf %>% dplyr::select(grid_id, geometry),
+          animal_endemism %>% dplyr::select(-grid_id),
+          join = sf::st_intersects
+        ) %>%
+          dplyr::mutate(animal_endemism_count = tidyr::replace_na(animal_endemism_count, 0))
+        animal_endemism_grid <- rename_grid_id(animal_endemism_grid)
+
+        # Cells with >= 1 single-cell endemic define the overlap extent. Fall
+        # back to all occupied cells if there are none, so overlap_bbox and the
+        # downstream cropping stay well-defined (mirrors the calculator's guard).
+        animal_endemism_filtered <- animal_endemism_grid %>%
+          dplyr::filter(animal_endemism_count > 0)
+        if (nrow(animal_endemism_filtered) == 0) {
+          animal_endemism_filtered <- animal_endemism_grid %>%
+            dplyr::filter(grid_id %in% unique(animal_grid$grid_id))
+        }
+        overlap_bbox <- sf::st_bbox(animal_endemism_filtered)
+
+        # Expose the downstream-consumed objects to the global env, matching
+        # what rawEndemismCalculator.R would otherwise have left behind.
+        grid_sf                  <<- grid_sf
+        grid_sf_clipped          <<- grid_sf_clipped
+        animal_endemism_filtered <<- animal_endemism_filtered
+        overlap_bbox             <<- overlap_bbox
+      } else source("scripts/utils/rawEndemismCalculator.R")
       
     }
   

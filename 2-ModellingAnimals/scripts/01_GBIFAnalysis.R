@@ -139,7 +139,7 @@ animal_grid_data <- grid_sf |>
 
 source("scripts/utils/ModelAnimal.R")
 
-modelAnimal(animal_grid_data, fill_animals = .amani_fillAnimals,
+modelAnimal(animal_grid_data,
             redoeverything = ifelse(exists(".amani_redo"), .amani_redo, TRUE), 
             fill_animals = if (exists(".amani_fillAnimals")) .amani_fillAnimals else FALSE,
             alphaRichnessMethod = if (exists(".amani_alphaRichnessMethod")) .amani_alphaRichnessMethod else "empirical",

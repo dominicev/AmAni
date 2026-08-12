@@ -2,6 +2,8 @@
 library(sf)
 
 source("AmAni.summarize.R")
+library(dplyr)
+library(purrr)
 
 
 getwd()
@@ -11,25 +13,103 @@ data.dir<-"./5-SensitivityTesting/output/sampleDatasets/"
 
 files_full <- list.files(data.dir, pattern = "\\.RData$", full.names = TRUE)
 files_short <- list.files(data.dir, pattern = "\\.RData$", full.names = FALSE)
-length(files_full)
-files_full[41]
-comparisonList<-list()
 
+files_full_sub <- files_full[grepl("like|variedSiteEvenness", files_full, ignore.case = TRUE)]
+files_short_sub <- files_short[grepl("like|variedSiteEvenness", files_short, ignore.case = TRUE)]
+length(files_full_sub)
 
 
 fn<-1
 
+settingCombinations1 <- tidyr::expand_grid(
+  # Fixed parameters (same across all runs)
+  # clean                  = FALSE,
+  # force_clean          = FALSE,
+  # redo                 = TRUE,
+  # min_occurrences      = "auto",
+  # min_completeness     = "auto",
+  # max_richness         = NULL,
+  # disable_outlier_filter = TRUE,
+  # estimateBounds       = FALSE,
+  # skipRawEndemism      = TRUE,
+
+  # Varying parameters (one row per unique combination)
+  fill_plants               = c(FALSE, TRUE),
+  fill_animals              = c(FALSE, TRUE),
+  filter_plant_completeness = NULL,
+  fit_params                = list(
+    # c("amplitude"),
+    # c("amplitude", "meanlog"),
+    # c("amplitude", "sdlog"),
+    c("amplitude", "meanlog", "sdlog")
+  )
+)
+
+
+settingCombinations2 <- tidyr::expand_grid(
+  # Fixed parameters (same across all runs)
+  # clean                  = FALSE,
+  # force_clean          = FALSE,
+  # redo                 = TRUE,
+  # min_occurrences      = "auto",
+  # min_completeness     = "auto",
+  # max_richness         = NULL,
+  # disable_outlier_filter = TRUE,
+  # estimateBounds       = FALSE,
+  # skipRawEndemism      = TRUE,
+  
+  # Varying parameters (one row per unique combination)
+  fill_plants               = FALSE,
+  fill_animals              = FALSE,
+  filter_plant_completeness = list(NULL, 0.5, 0.75, 0.9),
+  fit_params                = list(
+    # c("amplitude"),
+    # c("amplitude", "meanlog"),
+    # c("amplitude", "sdlog"),
+    c("amplitude", "meanlog", "sdlog")
+  )
+)
+
+settingCombinations3 <- tidyr::expand_grid(
+  # Fixed parameters (same across all runs)
+  # clean                  = FALSE,
+  # force_clean          = FALSE,
+  # redo                 = TRUE,
+  # min_occurrences      = "auto",
+  # min_completeness     = "auto",
+  # max_richness         = NULL,
+  # disable_outlier_filter = TRUE,
+  # estimateBounds       = FALSE,
+  # skipRawEndemism      = TRUE,
+  
+  # Varying parameters (one row per unique combination)
+  fill_plants               = FALSE,
+  fill_animals              = FALSE,
+  filter_plant_completeness = NULL,
+  fit_params                = list(
+     c("amplitude"),
+     c("amplitude", "meanlog"),
+     c("amplitude", "sdlog"),
+    c("amplitude", "meanlog", "sdlog")
+  )
+)
+
+settingCombinations<-bind_rows(list(settingCombinations3, settingCombinations2, settingCombinations1))
+
+
 source("AmAni.manager.R")
-for (fn in 1:length(files_full)) {
+for(set in 1:nrow(settingCombinations)){
+
+  for (fn in seq_along(files_full_sub)) {
   tryCatch({
   
-    loaded_objects <- load(files_full[fn])
-    fnElem<-unlist(lapply(  unlist(strsplit(basename(files_full[fn]), split="\\.")), function(x){strsplit(x, "_")}))
+    loaded_objects <- load(files_full_sub[fn])
+    fnElem<-unlist(lapply(  unlist(strsplit(basename(files_full_sub[fn]), split="\\.")), function(x){strsplit(x, "_")}))
     
     # alternatve code for fnElem 
-    # m <- regmatches(basename(files_full[fn]),
+    # m <- regmatches(basename(files_full_sub[fn]),
     #             regexpr("^(?P<term>[^.]+)\\.(?P<scen>[^_]+)_(?P<level>[^_]+)_(?P<rep>\\d+)\\.RData$",
-    #                     basename(files_full[fn]), perl = TRUE))
+    #                     basename(files_full_sub[fn]), perl = TRUE))
     
     
     
@@ -86,47 +166,51 @@ for (fn in 1:length(files_full)) {
 #    Missing value or an infinity produced when evaluating the model
 outdir<-paste0("./output/",folder_name, "/animal_model/")
 existingOut<-list.files(outdir, pattern = "gamma_richnessfromSPRICH.*\\.txt$")
-if(length(existingOut)==1){
-  message(paste0(
-    folder_name, " simulation completed already. Continuing..."
-      ))
-  
-}else{
+# if(length(existingOut)==1){
+#   message(paste0(
+#     folder_name, " simulation completed already. Continuing..."
+#       ))
+#   
+# }else{
     #undebug(simulateScaledSpeciesRichness)
     #undebug(run_animal_model)
     run_animal_model(folder_name,
                      data_file = sub("^.*?data/", "data/", full_path),
                      clean = FALSE,
                      redo = FALSE,
-                     min_occurrences = 1,
-                     min_completeness = 0,
-                       min_richness = 1,
-                       filter_plant_completeness = 0,
-                     disable_outlier_filter = TRUE,
-                       fit_params = c("amplitude", "meanlog","sdlog"),
+                     min_occurrences = "auto",
+                     min_completeness = "auto",
+                     min_richness = 1,
                      estimateBounds=FALSE,
-                     skipRawEndemism = FALSE
+                     skipRawEndemism = TRUE,
+                     customOutputFolderPrefix = "p_",
+                     disable_outlier_filter = TRUE,
+                     customOutputFolderSuffix = paste0("_",toString(set)),
+                     fill_plants=settingCombinations$fill_plants[[set]],
+                     fill_animals=settingCombinations$fill_animals[[set]],
+                     fit_params = settingCombinations$fit_params[[set]],
+                     filter_plant_completeness = settingCombinations$filter_plant_completeness[[set]]
                        )
-}
+#}
   }, error = function(e) {
     message("Error at iteration ", fn, ": ", conditionMessage(e))
   })
 }
-
+}
 
 
 fn<-3
 source("AmAni.manager.R")
-for (fn in 1:length(files_full)) {
+for (fn in seq_along(files_full_sub)) {
   print(fn)
-  loaded_objects <- load(files_full[fn])
+  loaded_objects <- load(files_full_sub[fn])
   
-  fnElem<-unlist(lapply(  unlist(strsplit(basename(files_full[fn]), split="\\.")), function(x){strsplit(x, "_")}))
+  fnElem<-unlist(lapply(  unlist(strsplit(basename(files_full_sub[fn]), split="\\.")), function(x){strsplit(x, "_")}))
   
   # alternatve code for fnElem 
-  # m <- regmatches(basename(files_full[fn]),
+  # m <- regmatches(basename(files_full_sub[fn]),
   #             regexpr("^(?P<term>[^.]+)\\.(?P<scen>[^_]+)_(?P<level>[^_]+)_(?P<rep>\\d+)\\.RData$",
-  #                     basename(files_full[fn]), perl = TRUE))
+  #                     basename(files_full_sub[fn]), perl = TRUE))
   
   # The test name always sits immediately before "sample" in fnElem,
   # regardless of how many run/replicate tokens precede it.
@@ -135,7 +219,7 @@ for (fn in 1:length(files_full)) {
   
   # If df failed to load (NULL), build an all-NA row and move on
   if (is.null(df)) {
-    message("df is NULL for file: ", basename(files_full[fn]), " — recording NA row.")
+    message("df is NULL for file: ", basename(files_full_sub[fn]), " — recording NA row.")
     prev_valid <- Filter(Negate(is.null), comparisonList)
     if (length(prev_valid) > 0) {
       na_row <- prev_valid[[length(prev_valid)]][1, , drop = FALSE]
@@ -199,7 +283,7 @@ for (fn in 1:length(files_full)) {
       summaryInfoFile<-list.files(
       path = data.dir, 
       pattern = paste0("^", search_term, "\\.summary_", 
-                       strsplit(strsplit( basename(files_full[fn]), split ="sample_" )[[1]][2], split =".RData" )
+                       strsplit(strsplit( basename(files_full_sub[fn]), split ="sample_" )[[1]][2], split =".RData" )
                        ,"\\.csv$"), 
       full.names = TRUE
       )
@@ -285,7 +369,7 @@ for (fn in 1:length(files_full)) {
       
 }
 
-saveRDS(comparisonList, "./5-SensitivityTesting//results//FULLRAW_comparisonList.rds")
+saveRDS(comparisonList, "./5-SensitivityTesting//results//p_FULLRAW_comparisonList.rds")
 
 
 names(comparisonList[[39]])
@@ -535,7 +619,7 @@ p2 <- ggplot(plot_data2, aes(x = scenario_label, y = value, fill = metric)) +
 
 # ── PDF output ────────────────────────────────────────────────────────────────
 pdf_dir  <- "C:/Users/dominice/OneDrive - University of Illinois - Urbana/Projects/Peruvian Blattodea/Cockroaches in a coal mine/AmAni/5-SensitivityTesting/results"
-pdf_path <- file.path(pdf_dir, paste0("sensitivity_plots_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf"))
+pdf_path <- file.path(pdf_dir, paste0("p_sensitivity_plots_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf"))
 
 pdf(pdf_path, width = 20, height = 8)
 print(p1)

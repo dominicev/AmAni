@@ -17,6 +17,7 @@
 /5-SensitivityTesting/data/
 /5-SensitivityTesting/output/
 /output
+/p_output
 .RDataTmp
 .RData
 .Rhistory
