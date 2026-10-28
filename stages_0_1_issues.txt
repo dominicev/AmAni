@@ -1,0 +1,169 @@
+Stages 0 & 1 (Plant Data Curation & Filtering) — Issues Tracker
+=================================================================
+Generated: 2026-03-28
+Updated:   2026-03-28
+
+
+SPEEDUPS (implemented)
+----------------------
+
+A. [DONE] data.table aggregation for heavy operations in Stage 0.
+   Replaced dplyr group_by/summarise on sf objects with data.table
+   operations on geometry-free tables. Geometry dropped after spatial join,
+   rejoined only for the final output. Affects species count aggregation,
+   name cleaning, WFO correction, re-aggregation, and endemism calculations.
+
+B. [DONE] Avoid reprojecting full occurrence dataset.
+   Grid is now built in 3857 from the Amazon shape bbox, then the grid
+   polygons (~20k) are transformed back to 4326 for the spatial join. The
+   millions of individual occurrence points stay in 4326 throughout.
+
+C. [DONE] st_crop() pre-filter before st_filter().
+   Added st_crop() to Amazon bounding box (fast bbox test) before
+   st_filter() against the polygon, reducing the number of points tested
+   against the irregular boundary.
+
+D. [DONE] Cache WFO matching results.
+   WFO.match() is skipped if wfo_data.rds exists and the species list hash
+   (xxhash64 via digest) matches the cached hash. Re-runs automatically if
+   the species list changes.
+
+F. [DONE] Cache Natural Earth urban_areas download.
+   Cropped + reprojected urban polygons saved to
+   urban_areas_amazon_3857.rds. Subsequent runs load from cache, skipping
+   the download, st_make_valid, crop, and reproject steps.
+
+G. [DONE] Adaptive chunking for grid intersection.
+   For grids with <= 25,000 unique cells (covers the Amazon grid), uses a
+   single st_intersects() call. Falls back to 5,000-cell chunks only for
+   larger grids.
+
+
+IMPLEMENTED
+-----------
+
+1. [FIXED] upper_cutoff variable reuse in plantfiltering.R
+   The weighted endemism cutoff was overwritten by the raw endemism cutoff.
+   filtered_ids2 used the wrong threshold for weighted endemism outliers.
+   Fix: Split into upper_cutoff_we and upper_cutoff_re.
+
+2. [FIXED] wfo_matches <- saveRDS(...) in curatingRawPlantData.R
+   saveRDS() returns NULL, so wfo_matches was silently set to NULL.
+   Fix: Removed the assignment; saveRDS is now a standalone call.
+
+3. [FIXED] saveRDS(raw_endemism_filt) in plantModel.R
+   Referenced a variable that didn't exist as a standalone object.
+   Fix: Moot — plantModel.R has been archived.
+
+6. [FIXED] WFO match takes first result without checking taxonomic status
+   slice(1) grabbed the first WFO match per name regardless of status.
+   Fix: Matches are now ranked by taxonomicStatus (Accepted > Synonym >
+   other) before selecting the best match per input name.
+
+7. [FIXED] No aggregation after name correction
+   After WFO correction, formerly-distinct names mapping to the same
+   accepted name were not re-aggregated, inflating species richness.
+   Fix: Added group_by(grid_id, scientificName) + summarise(count = sum())
+   after applying WFO corrections.
+
+8. [FIXED] plantModel.R was largely redundant with curatingRawPlantData.R
+   Fix: plantModel.R archived to 0-CuratingPlantData/archive/. Unique
+   content (raw endemism calculation, QA visualization) transplanted into
+   curatingRawPlantData.R as commented sections.
+
+9. [FIXED] Raw endemism computed in three places
+   Fix: Canonical computation now lives in Stage 0 (curatingRawPlantData.R).
+   Stage 1 loads it from Stage 0 output for outlier detection, then
+   recalculates both endemism metrics from scratch after all cell removal
+   so final values reflect the post-filtering dataset.
+
+11. [FIXED] Outlier thresholds differ between Stage 0 QA and Stage 1
+    plantModel.R used Q99 + 3*IQR; plantfiltering.R uses Q95 + 3*IQR.
+    Fix: Commented QA block in curatingRawPlantData.R updated to Q95 + 3*IQR
+    to match Stage 1. plantModel.R (which had Q99) is archived.
+
+13. [FIXED] No record-count logging through the pipeline
+    Fix: Added message() logging at all major milestones in both scripts.
+    Stage 0: GBIF load, spatial filter, gridding, name cleaning, WFO match
+    summary, re-aggregation, endemism stats, completion.
+    Stage 1: input summary, outlier thresholds, cells flagged per filter,
+    total removal, post-filtering counts, recalculated endemism stats,
+    final output summary, completion.
+
+14. [FIXED] No duplicate removal on plant data
+    Fix: Added exact spatial duplicate removal (same scientificName +
+    decimalLatitude + decimalLongitude) after GBIF load, before spatial
+    filtering. Consistent with 00_cleanGBIF.R for animal data.
+
+15. [FIXED] No year/date filtering on plant data
+    Fix: Added year filter (>= 1800, <= current year; NAs kept) after GBIF
+    load. Required adding "year" to fread select columns.
+
+16. [FIXED] No absence/occurrence status filter on plant data
+    Fix: Added filter removing occurrenceStatus == "ABSENT" after GBIF load.
+    Required adding "occurrenceStatus" to fread select columns.
+
+17. [FIXED] Stage 0 output directory had ~460 MB of intermediate files
+    Fix: Moved 9 superseded files (~110 MB) to 0-CuratingPlantData/archive/:
+    filtered_gbif_data.rds, amazon_filtered_data.rds, species_counts.rds,
+    species_counts2.rds, species_endemism.rds, filtered_species_endemism.rds,
+    filteredRaw_species_endemism.rds, and 2 exploratory PNGs.
+    Stage 0 output now contains only 7 actively-referenced files.
+
+18. [FIXED] data.table/sf class toggling in plantfiltering.R
+    setDT() stripped the sf class, then st_as_sf() restored it with manual
+    geometry reconstruction.
+    Fix: Replaced with dplyr::filter(), keeping the sf class intact.
+
+
+NOT YET IMPLEMENTED
+-------------------
+
+4. [WON'T FIX] EPSG:3857 is not equal-area.
+   The code comment says "Reproject to an equal-area CRS (e.g., UTM)" but
+   uses Web Mercator (3857), which is conformal. Grid cells at the equator
+   vs. at ~15 S represent ~6% different real-world areas.
+
+   Justification for leaving as-is:
+   - The pipeline is internally consistent: all stages that use the species
+     grid (0, 1, 2, 4) share the same projection, so no stage introduces a
+     mismatch.
+   - Richness, endemism, range size, and extinction counts are all based on
+     cell counts (presence/absence), not cell areas. A species in 3 cells
+     has range_size = 3 regardless of whether those cells are exactly 500
+     km² each.
+   - The adjacency list operates on grid topology (which cells neighbor
+     which), not metric distances. Since the grid was created in 3857, the
+     neighbors are the correct topological neighbors.
+   - Stage 3 (patch extraction) independently uses EPSG:5880 (South America
+     Albers Equal Area) for patch area calculations, so deforestation patch
+     sizes are not affected by the species grid CRS.
+   - The ~6% area distortion across the Amazon's latitude range (5 N to
+     18 S) is small relative to other sources of uncertainty in the pipeline
+     (simulated ranges, sampling bias, taxonomic completeness).
+   - Changing the CRS would require regenerating all Stage 0-1 outputs, the
+     adjacency list, and all organism model runs, with high risk of
+     introducing mismatches between old and new outputs for minimal gain.
+
+5. [FIXED] No coordinate uncertainty filter on plant data.
+   The filter was commented out in plantModel.R and absent from
+   curatingRawPlantData.R. Animal data goes through a 10 km uncertainty
+   filter in 00_cleanGBIF.R, but the plant data didn't.
+   Fix: Added coordinateUncertaintyInMeters <= 10000 filter after GBIF
+   load (NAs kept, consistent with 00_cleanGBIF.R).
+
+10. [WON'T FIX] Scripts are interactive notebooks, not functions.
+    They rely on a specific execution order, have scattered head()/getwd()/
+    colnames() calls, and hardcode save-then-immediately-reload cycles.
+    Wrapping each stage's logic into a function (like was done for Stages
+    2/4) would make the pipeline more robust and testable.
+    Decision: Deferred. Logging improvements (#13) address the main pain
+    point. Full function refactoring not worth the effort at this stage.
+
+12. [FIXED] City buffer uses MAX_AREAKM, not actual urban footprint.
+    The radius formula sqrt(MAX_AREAKM / pi) * 1000 assumed a circular city.
+    Fix: Replaced with Natural Earth urban_areas polygon layer, which
+    provides actual urban footprint polygons. The global layer is cropped
+    to the study bounding box early, then intersected with the grid in
+    chunks of 5000 cells to manage memory. The old circular buffer approach
+    is preserved as a commented-out fallback.

@@ -75,5 +75,5 @@ length(
 
 head(presentAnimals[-1])
 
-write.table(presentAnimals[-1], file = "./5-SensitivityTesting/data/allGBIFCombined.19.6.2026.tsv", sep = "\t", row.names = FALSE)
-write.table(presentAnimals[-1], file = "./5-SensitivityTesting/data/allGBIFCombined.19.6.2026.csv", sep = ",", row.names = FALSE)
+write.table(presentAnimals[-1], file = "./2-ModellingAnimals/data/allCombined/allGBIFCombined.19.6.2026.tsv", sep = "\t", row.names = FALSE)
+write.table(presentAnimals[-1], file = "./2-ModellingAnimals/data/allCombined/allGBIFCombined.19.6.2026.csv", sep = ",", row.names = FALSE)

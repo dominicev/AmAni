@@ -1,0 +1,9 @@
+organism_group,fill_plants,fill_animals,filter_plant_completeness,fit_params,fill_interaction,N,mean_abs_prop_error,median_abs_prop_error,mean_bias_prop,median_bias_prop,mean_abs_error
+beetle,TRUE,FALSE,none,"amplitude, meanlog, sdlog","TF
+(Plants=T, Animals=F)",6,0.746616924645472,0.728195384187599,0.253383075354528,0.271804615812402,32221
+butterfly,TRUE,FALSE,none,"amplitude, meanlog, sdlog","TF
+(Plants=T, Animals=F)",8,0.652684447122069,0.68179395680786,0.347315552877931,0.31820604319214,28167.25
+roach,TRUE,FALSE,none,"amplitude, meanlog, sdlog","TF
+(Plants=T, Animals=F)",6,0.661051379491457,0.767262953007693,0.338948620508543,0.232737046992307,28528.3333333333
+variedSiteEvenness,FALSE,FALSE,none,"amplitude, meanlog","FF
+(Plants=F, Animals=F)",12,0.266981030061482,0.291581703586987,0.753541415639386,0.708418296413013,11521.8333333333

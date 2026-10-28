@@ -37,7 +37,7 @@ clean_gbif <- function(
     # For zip inputs, derive the output name from the CSV inside the archive
     if (tolower(tools::file_ext(input_file)) == "zip") {
       #csv_name <- grep("\\.csv$", unzip(input_file, list = TRUE)$Name, value = TRUE)[1] ##original, works
-      csv_name <- grep("\\.(csv|tsv)$", unzip(path, list = TRUE)$Name, ignore.case = TRUE, value = TRUE) #fix to add TSV
+      csv_name <- grep("\\.(csv|tsv)$", unzip(input_file, list = TRUE)$Name, ignore.case = TRUE, value = TRUE) #fix to add TSV
       output_file <- file.path(dirname(input_file),
                                sub("\\.csv$", "_cleaned.csv", basename(csv_name)))
     } else {
@@ -50,25 +50,27 @@ clean_gbif <- function(
   # Support reading directly from zip archives
   fread_auto <- function(path, ...) {
     ext <- tolower(tools::file_ext(path))
-    file_sep <- if (ext == "tsv") "\t" else ","
+    # GBIF .tsv downloads are unquoted; CSVs quote fields that contain commas
+    sep_for <- function(e) if (e == "tsv") "\t" else ","
+    quote_for <- function(e) if (e == "tsv") "" else "\""
     
-    if (tolower(tools::file_ext(path)) == "zip") {
+    if (ext == "zip") {
       csv_name <- grep("\\.(csv|tsv)$", unzip(path, list = TRUE)$Name, value = TRUE)
       if (length(csv_name) == 0) stop("No CSV found inside: ", path, call. = FALSE)
       if (length(csv_name) > 1) csv_name <- csv_name[1]
       
       # Check inner extension for zipped files
       inner_ext <- tolower(tools::file_ext(csv_name))
-      inner_sep <- if (inner_ext == "tsv") "\t" else ","
       
       cmd <- sprintf('unzip -p "%s" "%s"', normalizePath(path, winslash = "/"), csv_name)
-      data.table::fread(cmd = cmd, ...)
+      data.table::fread(cmd = cmd, sep = sep_for(inner_ext), quote = quote_for(inner_ext), ...)
     } else {
-      data.table::fread(file = path, sep = file_sep, ...)    }
+      data.table::fread(file = path, sep = sep_for(ext), quote = quote_for(ext), ...)
+    }
   }
   
   #Peek at the first row of the file to see what headers actually exist
-  file_headers <- names(data.table::fread(input_file, nrows = 0))
+  file_headers <- names(fread_auto(input_file, nrows = 0))
   print(paste0("There are ", toString( length(file_headers)), " header columns in the raw data file."))
   
   
@@ -82,22 +84,16 @@ clean_gbif <- function(
   columns_to_keep <- intersect(desired_columns, file_headers)
   
   #Read the file safely
-  raw <- fread_auto(
-    input_file,
-    select = columns_to_keep,
-    quote = "" 
-  )
+  raw <- fread_auto(input_file, select = columns_to_keep)
   
-  
-  
-  raw <- fread_auto(
-    input_file,
-    select = c("gbifID", "species", "taxonRank", "scientificName",
-               "decimalLatitude", "decimalLongitude",
-               "coordinateUncertaintyInMeters", "occurrenceStatus", "issue",
-               "establishmentMeans", "year"),
-    quote = ""
-  )
+  # Fall back to scientificName when no species column is available
+  if (!"species" %in% names(raw) && "scientificName" %in% names(raw)) {
+    if (verbose) message("  'species' column not found; using scientificName as species")
+    data.table::setnames(raw, "scientificName", "species")
+  } else if ("species" %in% names(raw) && "scientificName" %in% names(raw)) {
+    # Fill blank/NA species values from scientificName
+    raw[is.na(species) | species == "", species := scientificName]
+  }
   
   n_start <- nrow(raw)
   if (verbose) message("  Raw records: ", n_start)

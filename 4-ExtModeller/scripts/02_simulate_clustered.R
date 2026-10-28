@@ -85,9 +85,20 @@ if (exists(".amani_animal_model_dir")) {
   animalModelDir <- paste0(dirname(getwd()), "/2-ModellingAnimals/output/madre de dios analysis results")
 }
 sim_files <- list.files(
-  path = animalModelDir, pattern = "^simulatedOccurencesForAnimal.*\\.rds$", full.names = TRUE
+  path = animalModelDir, pattern = "^simulatedOccurencesForAnimal\\.rds$", full.names = TRUE
 )
-simAnimalObj <- readRDS(sim_files[1])
+if (length(sim_files) == 0) stop("simulatedOccurencesForAnimal.rds not found in: ", animalModelDir)
+# Load lightweight (geometry-free) cache if it is newer than the main output
+lite_file <- sub("\\.rds$", "_lite.rds", sim_files[1])
+if (file.exists(lite_file) && file.mtime(lite_file) >= file.mtime(sim_files[1])) {
+  simAnimalObj <- readRDS(lite_file)
+  message("Loaded lightweight data: ", lite_file)
+} else {
+  simAnimalObj <- readRDS(sim_files[1])
+  simAnimalObj <- sf::st_drop_geometry(simAnimalObj)
+  saveRDS(simAnimalObj, lite_file)
+  message("Created lightweight cache: ", lite_file)
+}
 
 dataDir <- paste0(dirname(getwd()), "/1-FilteringPlantData/output")
 occ_sf <- readRDS(paste0(dataDir, "/species_counts4_filtered.rds"))
@@ -96,9 +107,7 @@ grid_size_m <- 22360
 grid <- st_make_grid(occ_sf, cellsize = grid_size_m, what = "polygons")
 grid_sf <- st_sf(grid_id = seq_along(grid), geometry = grid)
 
-if (st_crs(simAnimalObj) != st_crs(grid_sf)) {
-  simAnimalObj <- st_transform(simAnimalObj, st_crs(grid_sf))
-}
+# CRS transform skipped — simAnimalObj is geometry-free; grid_id already assigned in Stage 2
 
 grid_sf$grid_area_m2  <- as.numeric(st_area(grid_sf))
 grid_sf$grid_area_km2 <- grid_sf$grid_area_m2 / 1e6

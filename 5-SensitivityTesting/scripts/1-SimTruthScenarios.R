@@ -30,7 +30,7 @@
   
 }
 
-animalDataPath<-"./5-SensitivityTesting/data/rawData/allGBIFCombined.19.6.2026.tsv"
+animalDataPath<-"./2-ModellingAnimals/data/allCombined/allGBIFCombined.19.6.2026.tsv"
 if (file.exists(animalDataPath)) {
   message("The animal data already exists. You can skip to making the true datasets....")
 } else {

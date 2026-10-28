@@ -1,5 +1,6 @@
 
 source("scripts/utils/helpers.R")
+source("scripts/utils/computeCellStats.R")
 
 fillingScriptDir <- paste0(dirname(getwd()), "/1-FilteringPlantData/scripts")
 source(paste0(fillingScriptDir, "/computeCompleteness.R"))
@@ -36,7 +37,12 @@ modelAnimal<-function(
              "combined_endemism", "scaling_factors", "ratio_median",
              "fit_pred_shifted", "lognorm_fit_animal",
              ".amani_delta_meanlog", ".amani_ratio_sdlog", ".amani_plant_mdd_meanlog",
-             ".amani_filled_species")
+             ".amani_filled_species",
+             # Set conditionally (or via <<-) and later tested with exists():
+             # a leftover would be silently mistaken for the current run's.
+             ".amani_filter_summary", "gammaRichnessFromSamplingModel",
+             "gammaRichnessFromSamplingModel_best", "simulated_occurrence_dt",
+             "endemism_r2", "scaled_endemism_median", "scaled_endemism_ci")
   for (v in stale) if (exists(v, envir = .GlobalEnv)) rm(list = v, envir = .GlobalEnv)
 
   # Push parameters to global env so sourced scripts can see them
@@ -65,8 +71,28 @@ modelAnimal<-function(
   #   (likely data artefacts) and dropped.
   #
   # Filter parameters:
-  #   min_completeness  Chao1 S_obs / S_est. Set to "auto" to estimate from
-  #                     the data, or a numeric value to override. Default "auto".
+  #   min_completeness  Sampling completeness (0–1). Set to "auto" to estimate
+  #                     from the data, or a numeric value to override.
+  #                     Default "auto". Interpretation depends on the
+  #                     completeness method (see .amani_completenessMethod).
+  #
+  # Global parameter .amani_completenessMethod controls which completeness
+  # estimator is used:
+  #   "Chao1"      (default) S_obs / S_Chao1. Uses singletons & doubletons.
+  #   "ACE"        Abundance-based Coverage Estimator. Uses rare species
+  #                (abundance <= 10) for a more stable estimate.
+  #   "Coverage"   Bias-corrected Good-Turing sample coverage (Chao & Jost
+  #                2012). Measures probability a new individual belongs to
+  #                an already-observed species. Only applied to cells whose
+  #                observed richness >= min_richness. Note: auto-estimation
+  #                of min_completeness via relative gap is not available with
+  #                this method (falls back to default threshold).
+  #   "Chao1, ACE" Cells are well-sampled if they pass the completeness
+  #                threshold under EITHER Chao1 OR ACE (union — more
+  #                inclusive than either method alone).
+  #   "all"        Cells are well-sampled if they pass the completeness
+  #                threshold under Chao1, ACE, OR Coverage (union). Coverage
+  #                is only evaluated for cells with richness >= min_richness.
   #   min_occurrences   Minimum occurrences per cell. Set to "auto" to
   #                     estimate from the discovery rate curve, or numeric to
   #                     override. Default "auto".
@@ -81,6 +107,12 @@ modelAnimal<-function(
   #                     more species is dropped. This is useful when you have
   #                     a domain-informed upper bound on how many species
   #                     could realistically occur in a single grid cell.
+  #
+  # Global parameter .amani_animalFilterType controls which filtering tracks
+  # are applied:
+  #   "balanced"    (default) Track A + Track B, with 30-cell safety guard.
+  #   "strict"      Track A only (no super-diverse rescue), 30-cell guard.
+  #   "extraStrict" Track A only, AND the 30-cell minimum is ignored.
   # ─────────────────────────────────────────────────────────────────────
   run_filter <- if (exists(".amani_min_occurrences", envir = .GlobalEnv)) {
     # "auto" or a positive number both trigger filtering
@@ -93,25 +125,41 @@ modelAnimal<-function(
   if (run_filter && exists("animal_grid", envir = .GlobalEnv)) {
 
     # --- Per-cell statistics (computed first; needed by auto-estimation) ---
-    spp_abund <- animal_grid |>
-      sf::st_drop_geometry() |>
-      dplyr::count(grid_id, Morphotype, name = "abundance")
+    # Delegated to compute_cell_stats() (scripts/utils/computeCellStats.R).
+    # Returns spp_abund (long: site × species abundance) and cell_stats
+    # (wide: richness estimate and completeness per site).
+    .amani_completeness_method <- if (exists(".amani_completenessMethod", envir = .GlobalEnv)) .amani_completenessMethod else "Chao1"
 
-    cell_stats <- spp_abund |>
-      dplyr::group_by(grid_id) |>
-      dplyr::summarise(
-        n_occurrences = sum(abundance),
-        n_species     = dplyr::n(),
-        f1 = sum(abundance == 1),
-        f2 = sum(abundance == 2),
-        .groups = "drop"
-      ) |>
-      dplyr::mutate(
-        chao1 = n_species + dplyr::if_else(
-          f2 > 0, f1^2 / (2 * f2), f1 * (f1 - 1) / 2
-        ),
-        completeness = n_species / chao1
+    # Determine which individual estimators to run. Accepts a single string
+    # ("Chao1", "ACE", "Coverage", "all"), or a character vector of methods
+    # (e.g. c("Chao1", "ACE")).
+    .methods_to_run <- if (length(.amani_completeness_method) > 1) {
+      unique(.amani_completeness_method)
+    } else {
+      switch(.amani_completeness_method,
+        "Chao1"        = "Chao1",
+        "ACE"          = "ACE",
+        "Coverage"     = "Coverage",
+        "Chao1, ACE"   = c("Chao1", "ACE"),
+        "all"          = c("Chao1", "ACE", "Coverage"),
+        stop("Unknown completeness method: ", .amani_completeness_method)
       )
+    }
+    .valid_methods <- c("Chao1", "ACE", "Coverage")
+    if (!all(.methods_to_run %in% .valid_methods)) {
+      stop("Unknown completeness method(s): ",
+           paste(setdiff(.methods_to_run, .valid_methods), collapse = ", "))
+    }
+
+    # Compute cell stats for each method
+    .cs_results <- lapply(.methods_to_run, function(m) {
+      compute_cell_stats(animal_grid, method = m, verbose = TRUE)
+    })
+    names(.cs_results) <- .methods_to_run
+
+    # Primary cell_stats (used for richness fences, reporting, etc.)
+    spp_abund  <- .cs_results[[1]]$spp_abund
+    cell_stats <- .cs_results[[1]]$cell_stats
 
     n_before <- nrow(cell_stats)
 
@@ -126,6 +174,7 @@ modelAnimal<-function(
     min_occurrences  <- if (identical(raw_occ, "auto"))  auto$min_occurrences  else as.numeric(raw_occ)
     min_completeness <- if (identical(raw_comp, "auto")) auto$min_completeness else as.numeric(raw_comp)
     min_richness     <- if (exists(".amani_min_richness", envir = .GlobalEnv)) .amani_min_richness else 20
+    filter_type     <- if (exists(".amani_animalFilterType", envir = .GlobalEnv)) .amani_animalFilterType else "balanced"
 
     # --- Richness fences ---
     credible_for_fence <- cell_stats |> dplyr::filter(n_species >= 3)
@@ -150,12 +199,33 @@ modelAnimal<-function(
     }
 
     # --- Track A: well-sampled cells ---
-    well_sampled_ids <- cell_stats$grid_id[
-      cell_stats$completeness   >= min_completeness &
-      cell_stats$n_occurrences  >= min_occurrences  &
-      cell_stats$n_species      >= min_richness     &
-      cell_stats$n_species      <= outlier_cutoff
-    ]
+    # For each method, find cells passing its completeness threshold.
+    # Coverage is only evaluated for cells with richness >= min_richness.
+    # When multiple methods are used, a cell is kept if it passes ANY of
+    # them (union) — combining methods is meant to be more inclusive, not
+    # stricter, since each estimator has different blind spots.
+    .well_sampled_per_method <- lapply(.methods_to_run, function(m) {
+      cs_m <- .cs_results[[m]]$cell_stats
+      if (m == "Coverage") {
+        # Coverage only acts on cells with richness >= min_richness.
+        # Cells below min_richness are automatically excluded.
+        cs_m$grid_id[
+          cs_m$n_species       >= min_richness     &
+          cs_m$completeness    >= min_completeness &
+          cs_m$n_occurrences   >= min_occurrences  &
+          cs_m$n_species       <= outlier_cutoff
+        ]
+      } else {
+        cs_m$grid_id[
+          cs_m$completeness    >= min_completeness &
+          cs_m$n_occurrences   >= min_occurrences  &
+          cs_m$n_species       >= min_richness     &
+          cs_m$n_species       <= outlier_cutoff
+        ]
+      }
+    })
+    well_sampled_ids <- Reduce(union, .well_sampled_per_method)
+    rm(.cs_results, .well_sampled_per_method)
 
     # --- Track B: super-diverse cells (above 97th, below outlier cutoff) ---
     super_diverse_ids <- cell_stats$grid_id[
@@ -168,7 +238,7 @@ modelAnimal<-function(
       cell_stats$n_species > outlier_cutoff
     ]
 
-    keep_cells <- union(well_sampled_ids, super_diverse_ids)
+    keep_cells <- if (filter_type == "balanced") union(well_sampled_ids, super_diverse_ids) else well_sampled_ids
 
     # --- Save pre-filter stats for the downstream report ---
     kept_stats <- cell_stats |> dplyr::filter(grid_id %in% keep_cells)
@@ -198,14 +268,33 @@ modelAnimal<-function(
         min_richness     = min_richness,
         outlier_cutoff   = outlier_cutoff,
         outlier_source   = outlier_source,
-        upper_fence_97   = upper_fence_97
+        upper_fence_97   = upper_fence_97,
+        filter_type      = filter_type,
+        completeness_method = .amani_completeness_method,
+        methods_used     = .methods_to_run
       ),
       filter_applied = TRUE
     )
 
+    # Per-cell table (all pre-filter cells) for the cell filter report maps
+    # in 02_animalAnalysis.R. Chao1/primary-method completeness only.
+    .cell_geom <- animal_grid[!duplicated(animal_grid$grid_id), "grid_id"]
+    .amani_filter_summary$cell_table <<- cell_stats |>
+      dplyr::transmute(
+        grid_id,
+        animal_richness     = n_species,
+        animal_occurrences  = n_occurrences,
+        animal_completeness = completeness,
+        retained            = grid_id %in% keep_cells
+      ) |>
+      dplyr::left_join(.cell_geom, by = "grid_id") |>
+      sf::st_as_sf()
+    rm(.cell_geom)
+
     # Safety guard: if fewer than 30 cells would survive, skip the animal
     # filter entirely — not enough data to justify it.
-    if (length(keep_cells) < 30) {
+    # Skipped when filter_type is "extraStrict".
+    if (filter_type != "extraStrict" && length(keep_cells) < 30) {
       warning("  Animal cell filter would retain only ", length(keep_cells),
               " cells (< 30). Skipping filter to preserve data.",
               call. = FALSE)
@@ -215,7 +304,8 @@ modelAnimal<-function(
       animal_grid_data <<- animal_grid_data[animal_grid_data$grid_id %in% keep_cells, ]
     }
 
-    message("  Combined cell filter:")
+    message("  Combined cell filter (type: ", filter_type,
+            ", completeness: ", .amani_completeness_method, "):")
     message("    Outlier cutoff: ", outlier_source)
     message("    Well-sampled (completeness >= ", round(min_completeness, 2),
             ", occ >= ", min_occurrences, ", spp >= ", min_richness,
@@ -291,6 +381,7 @@ modelAnimal<-function(
         # what rawEndemismCalculator.R would otherwise have left behind.
         grid_sf                  <<- grid_sf
         grid_sf_clipped          <<- grid_sf_clipped
+        amazon_shp               <<- amazon_shp   # used by fill_grid_holes() in 02_animalAnalysis.R
         animal_endemism_filtered <<- animal_endemism_filtered
         overlap_bbox             <<- overlap_bbox
       } else source("scripts/utils/rawEndemismCalculator.R")

@@ -56,8 +56,12 @@ summary_tbl <- all_reps |>
     sd_spp_lost     = round(sd(n_spp_lost_total), 1),
     q25_spp_lost    = quantile(n_spp_lost_total, 0.25),
     q75_spp_lost    = quantile(n_spp_lost_total, 0.75),
+    min_spp_lost    = min(n_spp_lost_total),
+    max_spp_lost    = max(n_spp_lost_total),
     median_pop_lost = median(n_pop_lost_total),
     mean_pop_lost   = round(mean(n_pop_lost_total), 1),
+    min_pop_lost    = min(n_pop_lost_total),
+    max_pop_lost    = max(n_pop_lost_total),
     .groups = "drop"
   )
 
@@ -76,6 +80,8 @@ timestamp_str <- format(Sys.time(), "%Y%m%d_%H%M%S")
 
 p_spp <- ggplot(all_reps, aes(x = model, y = n_spp_lost_total, fill = model)) +
   geom_boxplot(outlier.size = 0.8) +
+  stat_summary(fun.min = min, fun.max = max, geom = "errorbar",
+               width = 0.3, linewidth = 0.4) +
   facet_wrap(~scenario, scales = "free_y") +
   scale_fill_manual(values = c(
     "Neutral"   = "#E69F00",
@@ -101,6 +107,8 @@ cat("Saved species extinction plot to PDF\n")
 
 p_pop <- ggplot(all_reps, aes(x = model, y = n_pop_lost_total, fill = model)) +
   geom_boxplot(outlier.size = 0.8) +
+  stat_summary(fun.min = min, fun.max = max, geom = "errorbar",
+               width = 0.3, linewidth = 0.4) +
   facet_wrap(~scenario, scales = "free_y") +
   scale_fill_manual(values = c(
     "Neutral"   = "#E69F00",

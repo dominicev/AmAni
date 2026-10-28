@@ -92,6 +92,31 @@ gbif_raw <- fread_auto(
   quote = "\"" ####NOTE: This line might cause errors....change it to make it flexible based on the status of commas in the actual file headers
 )
 
+# Fall back to scientificName when no species column is available
+# (mirrors the logic in 00_cleanGBIF.R)
+if (!"species" %in% names(gbif_raw) && "scientificName" %in% names(gbif_raw)) {
+  message("  'species' column not found; using scientificName as species")
+  data.table::setnames(gbif_raw, "scientificName", "species")
+} else if ("species" %in% names(gbif_raw) && "scientificName" %in% names(gbif_raw)) {
+  # Fill blank/NA species values from scientificName
+  gbif_raw[is.na(species) | species == "", species := scientificName]
+}
+
+# Coordinates may arrive as character columns (e.g. from curated CSVs), and
+# some rows contain non-decimal formats (DMS strings, blanks, literal "NA")
+# that silently become NA on coercion. Catch that here — before filtering —
+# so bad rows are dropped with a clear message instead of failing later
+# inside st_as_sf().
+gbif_raw[, decimalLatitude := suppressWarnings(as.numeric(decimalLatitude))]
+gbif_raw[, decimalLongitude := suppressWarnings(as.numeric(decimalLongitude))]
+
+n_bad_coords <- sum(is.na(gbif_raw$decimalLatitude) | is.na(gbif_raw$decimalLongitude))
+if (n_bad_coords > 0) {
+  message(
+    "  Dropping ", n_bad_coords, " record(s) with non-numeric or missing coordinates ",
+    "(e.g. DMS-format strings, blanks, literal \"NA\") that could not be coerced to decimal degrees."
+  )
+}
 
 # Basic filters
 gbif_clean <- gbif_raw[

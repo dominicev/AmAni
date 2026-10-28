@@ -6,13 +6,13 @@
 # Checkpoints intermediate results to RDS files so expensive steps can be
 # skipped on re-run. Safe to interrupt and restart.
 #
-# Usage (from the folder containing this script and def_00_20.tif):
+# Usage (from anywhere):
 #   Rscript 04_area_accounting.R
 #
 # Requirements:
 #   - R (>= 4.1)
 #   - terra package
-#   - def_00_20.tif in the same folder
+#   - def_00_20.tif in 3-ExtPredictor/data/
 #
 # Output:
 #   - output/area_accounting.csv       (final one-row summary)
@@ -23,21 +23,25 @@
 
 library(terra)
 
-# --- resolve working directory ---
+# --- resolve script location and working directory ---
+script_dir <- NULL
 if (!interactive()) {
   args <- commandArgs(trailingOnly = FALSE)
   script_path <- normalizePath(
     sub("--file=", "", args[grep("--file=", args)]),
     mustWork = TRUE
   )
-  setwd(dirname(script_path))
+  script_dir <- dirname(script_path)
+  setwd(script_dir)
+} else {
+  script_dir <- getwd()
 }
 cat("Working directory:", getwd(), "\n")
 
 dir.create("output", showWarnings = FALSE)
 
 # --- load raster ---
-rast_path <- "def_00_20.tif"
+rast_path <- normalizePath(file.path(script_dir, "..", "..", "data", "def_00_20.tif"))
 stopifnot(file.exists(rast_path))
 
 r <- rast(rast_path)

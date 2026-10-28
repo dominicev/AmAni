@@ -105,7 +105,7 @@ set_stage_wd <- function(stage_dir) {
 }
 
 restore_wd <- function() {
-  for (v in c(".amani_wd", ".amani_output_dir", ".amani_animal_model_dir", ".amani_data_file",".amani_estimateBounds", ".amani_redo", ".amani_min_occurrences", ".amani_min_completeness", ".amani_min_richness", ".amani_max_richness", ".amani_disable_outlier_filter", ".amani_filter_plant_completeness", ".amani_filter_summary", ".amani_fit_params", ".amani_alphaRichnessMethod", ".amani_delta_meanlog", ".amani_ratio_sdlog", ".amani_plant_mdd_meanlog", ".amani_fill_plants")) {
+  for (v in c(".amani_wd", ".amani_output_dir", ".amani_animal_model_dir", ".amani_data_file",".amani_estimateBounds", ".amani_gammaErrorType", ".amani_redo", ".amani_min_occurrences", ".amani_min_completeness", ".amani_min_richness", ".amani_max_richness", ".amani_disable_outlier_filter", ".amani_filter_plant_completeness", ".amani_filter_summary", ".amani_fit_params", ".amani_alphaRichnessMethod", ".amani_animalFilterType", ".amani_delta_meanlog", ".amani_ratio_sdlog", ".amani_plant_mdd_meanlog", ".amani_fill_plants")) {
     if (exists(v, envir = .GlobalEnv)) rm(list = v, envir = .GlobalEnv)
   }
   setwd(project_root)
@@ -569,15 +569,71 @@ check_status <- function(organism = NULL) {
 
 
 # --- run_animal_model() ------------------------------------------------------
+# Runs the Stage 2 animal modelling pipeline for a given organism.
+#
+# Parameters:
+#   organism             - name for the output directory under output/.
+#   data_file            - path to input data (.csv, .zip, .tsv, or .xlsx).
+#   secondary_data_file  - optional second input file to combine with data_file.
+#   simulateParallel     - logical; run simulations in parallel.
+#   simulateNCores       - number of cores to use when simulateParallel = TRUE.
+#   fill_plants          - logical; use interpolated (TRUE) or empirical (FALSE) plant occurrences.
+#   fill_animals         - logical; buffer/interpolate animal occurrences (TRUE) or use empirical only (FALSE; recommended). 
+#   useSamplingExtension - logical; whether to apply a the linear model extension based on sampling parameters (Default = TRUE;recommended)
+#   simulate_ranges      - TRUE, "BestOnly", or "SkipUpper"; controls how many animal geographic range simulations are run. Set to "BestOnly" if you don't want to simulate three different sets of animal ranges or "SkipUpper" which just makes a best simulation and a conservative simulation (low estimate). TRUE (default) simulates ranges for the best estimate and the two 95% confidence estimates.
+#   clean                - logical; run 00_cleanGBIF.R before modelling (.csv/.zip only) to clean GBIF data that is potentially messy
+#   force_clean          - logical; re-run cleaning even if a cleaned file already exists.
+#   fix_taxon_names      - logical; resolve taxon name spelling/synonyms via GBIF backbone (requires clean = TRUE).
+#   taxon_kingdom        - kingdom string used to restrict taxon name matching, e.g. "Animalia".
+#   taxon_review_file    - optional path to write a review CSV of unresolved/spurious name matches.
+#   redo                 - logical; recompute raw endemism and plant richness from scratch. 
+#   alphaRichnessMethod  - method for alpha richness estimation; default "empirical". NOT CURRENTLY IN USE
+#   
+#   ANIMAL-CELL FILTERING PARAMETERS
+#   animalFilterType     - "balanced", "strict", or "extraStrict"; controls how strictly animal occurrences/cells are filtered. "balanced (Default) will not fully respect your minimum parameters but will make sure to include sites above those minima if another filter would otherwise remove it. "strict" will only filter based on completeness (but will automatically turn off if resulting in <30 input cells). "extraStrict" does the same as "strict" but may over-filter sites resulting in little data to analyze (ignore 30 cell rule)
+#   completenessMethod   - Method for calculating completeness per grid-cell: "Chao1", "ACE", "Coverage", c("Chao1", "ACE"), or "all". The multi parameter input and "all" will keep cells passed by all the filters.
+#   min_occurrences      - minimum occurrences per cell for "well-sampled" cells; "auto" or a number.
+#   min_completeness     - minimum Chao1 completeness for well-sampled cells; "auto" or a number. Good values tend to be between 0.6 and 0.8.
+#   min_richness         - minimum observed richness per cell to keep; default 20.
+#   max_richness         - maximum plausible richness per cell; NULL uses the 99.9th percentile.
+#   disable_outlier_filter - logical; if TRUE, skip the high-richness outlier cutoff.
+#   
+#   filter_plant_completeness - numeric threshold to restrict plant cells by Chao1 completeness, or NULL.
+#   fit_params           - character vector of log-normal parameters to fit, subset of c("amplitude", "meanlog", "sdlog").
+#   estimateBounds       - logical; whether to estimate upper/lower bounds. Set to FALSE for a faster run (without bounds based on simulated species at least)
+#   gammaErrorType       - "full" or "narrow"; controls gamma-diversity error/bounds reporting. "full" reports the accumulated error from both models. Simulations were tested on "narrow" errors and they prove to be relatively accurate.
+#   skipRawEndemism      - logical; skip raw endemism computation, which isn't used in the full model. Recommend to skip for time.
+#   customOutputFolderPrefix - optional string prefixed to the "output" segment of the output path.
+#   customOutputFolderSuffix - optional string appended to the organism output folder name.
+
+
+# Case- and whitespace-insensitive matching of character arguments to their
+# canonical spellings. `x` may be a vector or a comma-separated string.
+# Returns canonical values; errors on anything unrecognised.
+.amani_canonical <- function(x, choices, arg) {
+  vals <- trimws(unlist(strsplit(as.character(x), ",")))
+  idx <- match(tolower(vals), tolower(choices))
+  if (anyNA(idx)) {
+    stop(sprintf("Invalid value(s) for '%s': %s. Valid options: %s",
+                 arg, paste(shQuote(vals[is.na(idx)]), collapse = ", "),
+                 paste(shQuote(choices), collapse = ", ")), call. = FALSE)
+  }
+  unique(choices[idx])
+}
 
 run_animal_model <- function(organism,
                              data_file,
                              secondary_data_file = NULL,
-                             fill_plants = FALSE,
+                             fill_plants = TRUE,
                              fill_animals = FALSE,
                              alphaRichnessMethod = "empirical",
+                             useSamplingExtension = TRUE,
+                             simulate_ranges = TRUE, 
                              clean = FALSE,
                              force_clean = FALSE,
+                             fix_taxon_names = FALSE,
+                             taxon_kingdom = "Animalia",
+                             taxon_review_file = NULL,
                              redo = TRUE,
                              min_occurrences = "auto",
                              min_completeness = "auto",
@@ -587,9 +643,15 @@ run_animal_model <- function(organism,
                              filter_plant_completeness = NULL,
                              fit_params = c("amplitude"),
                              estimateBounds = TRUE,
-                             skipRawEndemism = FALSE,
+                             gammaErrorType = c("full", "narrow"),
+                             skipRawEndemism = TRUE,
+                             animalFilterType = c("balanced", "strict", "extraStrict"),
+                             completenessMethod = "Chao1",
                              customOutputFolderPrefix = NULL,
-                             customOutputFolderSuffix = NULL) {
+                             customOutputFolderSuffix = NULL,
+                             simulateParallel=FALSE,
+                             simulateNCores=1
+                             ) {
   # Run the animal modelling pipeline (Stage 2).
   #
   # The entry-point script is chosen automatically based on data_file extension:
@@ -605,7 +667,10 @@ run_animal_model <- function(organism,
   #               data_file and secondary_data_file are read and row-bound by
   #               matching column names (missing columns filled with NA) into a
   #               single combined CSV, and the rest of the pipeline runs on that
-  #               combined file. Not supported for .xlsx inputs.
+  #               combined file. Not supported for .xlsx inputs. Either file's
+  #               binomial name column may be labelled 'species' or
+  #               'scientificName'; both are folded into a single 'species'
+  #               column and 'scientificName' is dropped from the output.
   #   fill_plants:if TRUE, uses the plant occurrence data with interpolated range
   #               occurrences. If FALSE (default) only the empirical occurrences
   #               are used
@@ -615,6 +680,16 @@ run_animal_model <- function(organism,
   #               Applies to .csv and .zip files; ignored for .xlsx.
   #   force_clean: if TRUE, re-run cleaning even if a *_cleaned.csv already
   #               exists. Useful when cleaning code has changed.
+  #   fix_taxon_names: if TRUE, run CleanTaxonNames.R after the GBIF cleaning
+  #               step to resolve spelling variants and synonyms via the GBIF
+  #               backbone. Requires clean = TRUE (or a pre-cleaned input). The
+  #               corrected data are saved as *_taxaFixed.csv and used for all
+  #               downstream modelling. Default FALSE.
+  #   taxon_kingdom: kingdom string passed to clean_taxon_names() to restrict
+  #               fuzzy matching (e.g. "Animalia", "Plantae"). Default "Animalia".
+  #   taxon_review_file: optional path for the review CSV of unresolved or
+  #               spurious name matches (relative to 2-ModellingAnimals/). NULL
+  #               (default) writes nothing.
   #   redo:       if TRUE (default), recompute raw endemism and plant richness
   #               from scratch. Set to FALSE to reuse cached intermediate objects.
   #   min_occurrences: minimum number of occurrences per cell to be considered
@@ -658,6 +733,52 @@ run_animal_model <- function(organism,
   
   if (missing(organism)) stop("Specify an organism name, e.g. run_animal_model('cockroaches')", call. = FALSE)
   if (missing(data_file)) stop("Specify a data_file path.", call. = FALSE)
+
+  # Which gamma-diversity error mode to report: "full" (upper + lower bound
+  # re-simulation) or "narrow" (conservative bounds only). Passed to
+  # 02_animalAnalysis.R via .amani_gammaErrorType.
+  if (length(gammaErrorType) > 1) gammaErrorType <- gammaErrorType[1]
+  if (length(animalFilterType) > 1) animalFilterType <- animalFilterType[1]
+  gammaErrorType <- .amani_canonical(gammaErrorType, c("full", "narrow"), "gammaErrorType")
+  animalFilterType <- .amani_canonical(animalFilterType, c("balanced", "strict", "extraStrict"), "animalFilterType")
+
+  # simulate_ranges: logical, or "BestOnly"/"SkipUpper" in any capitalisation
+  if (!is.logical(simulate_ranges)) {
+    simulate_ranges <- .amani_canonical(simulate_ranges, c("BestOnly", "SkipUpper", "TRUE", "FALSE"), "simulate_ranges")
+    if (length(simulate_ranges) != 1) stop("simulate_ranges must be a single value.", call. = FALSE)
+    if (simulate_ranges %in% c("TRUE", "FALSE")) simulate_ranges <- as.logical(simulate_ranges)
+  }
+
+  # Completeness methods: "Chao1", "ACE", "Coverage", "all", or combinations
+  completenessMethod <- .amani_canonical(completenessMethod, c("Chao1", "ACE", "Coverage", "all"), "completenessMethod")
+  if ("all" %in% completenessMethod) completenessMethod <- "all"
+  if (length(completenessMethod) == 2 && all(c("Chao1", "ACE") %in% completenessMethod)) completenessMethod <- "Chao1, ACE"
+
+  fit_params <- .amani_canonical(fit_params, c("amplitude", "meanlog", "sdlog"), "fit_params")
+
+  # Strict filter modes rely on explicit thresholds; fill any unset ones with defaults.
+  if (animalFilterType %in% c("strict", "extraStrict")) {
+    is_unset <- function(arg_missing, val) {
+      arg_missing || is.null(val) || (length(val) == 1 && (is.na(val) || identical(val, "auto")))
+    }
+    strict_defaults <- list(min_occurrences = 5, min_richness = 25, min_completeness = 0.7)
+    unset <- c(
+      min_occurrences  = is_unset(missing(min_occurrences),  min_occurrences),
+      min_richness     = is_unset(missing(min_richness),     min_richness),
+      min_completeness = is_unset(missing(min_completeness), min_completeness)
+    )
+    if (any(unset)) {
+      to_fill <- names(unset)[unset]
+      warning(sprintf(
+        "animalFilterType = '%s' requires explicit minimum thresholds, but these were not set: %s. Using defaults: %s. These defaults may not be appropriate for '%s'; refine them manually for this organism group.",
+        animalFilterType,
+        paste(to_fill, collapse = ", "),
+        paste(sprintf("%s = %s", to_fill, unlist(strict_defaults[to_fill])), collapse = ", "),
+        organism
+      ), call. = FALSE)
+      for (nm in to_fill) assign(nm, strict_defaults[[nm]])
+    }
+  }
   
   # Choose entry script based on file extension
   ext <- tolower(tools::file_ext(data_file))
@@ -683,10 +804,17 @@ run_animal_model <- function(organism,
     }
 
     # Reader that mirrors the script's fread_auto (handles zip + tsv).
+    #   Also normalises the species column at read time: files may label
+    #   the binomial column 'species' (standard GBIF downloads) or
+    #   'scientificName' (e.g. curated files). Whichever header is present
+    #   is treated as the species column, so rbindlist() below aligns the
+    #   two files on a single 'species' column instead of leaving one file's
+    #   values stranded under a differently-named column. 'scientificName' is
+    #   dropped afterward so the combined output carries only 'species'.
     read_any <- function(rel_path) {
       p <- file.path(stage_dirs$animals, rel_path)
       e <- tolower(tools::file_ext(rel_path))
-      if (e == "zip") {
+      dt <- if (e == "zip") {
         inner <- grep("\\.(csv|tsv)$", unzip(p, list = TRUE)$Name,
                       ignore.case = TRUE, value = TRUE)[1]
         if (is.na(inner)) stop("No CSV/TSV found inside: ", rel_path, call. = FALSE)
@@ -696,6 +824,28 @@ run_animal_model <- function(organism,
       } else {
         data.table::fread(file = p, sep = if (e == "tsv") "\t" else ",")
       }
+
+      # Flexible species-column matching: accept either 'species' or
+      # 'scientificName' as the header, and standardise to 'species'.
+      has_species <- "species" %in% names(dt)
+      has_sciname <- "scientificName" %in% names(dt)
+      if (!has_species && has_sciname) {
+        dt[, species := scientificName]
+        message("  ", basename(rel_path), ": using 'scientificName' as the species column.")
+      } else if (has_species && has_sciname) {
+        n_fixed <- dt[is.na(species) | species == "", .N]
+        if (n_fixed > 0) {
+          dt[is.na(species) | species == "", species := scientificName]
+          message("  ", basename(rel_path), ": filled ", n_fixed,
+                  " missing 'species' values from 'scientificName'.")
+        }
+      }
+
+      # Drop 'scientificName' now that its values have been folded into
+      # 'species' -- the combined file should carry a single species column.
+      if (has_sciname) dt[, scientificName := NULL]
+
+      dt
     }
 
     message("  Combining primary + secondary data files ...")
@@ -731,6 +881,39 @@ run_animal_model <- function(organism,
     message("  Using cleaned file: ", data_file)
   } else if (grepl("_cleaned\\.csv$", data_file) && !force_clean) {
     message("  Input already cleaned — skipping clean_gbif.")
+  }
+
+  # Optionally standardise taxon names via the GBIF backbone
+  #   Runs after clean_gbif so it operates on standardised, filtered records.
+  #   Saves a *_taxaFixed.csv alongside the cleaned file and updates data_file.
+  #   Requires a cleaned input: either clean = TRUE was set (so clean_gbif() has
+  #   already run), or the data_file already carries a _cleaned.csv suffix.
+  #   Running on raw combined data is unsafe because curated rows often lack a
+  #   populated `species` column (names stored in `scientificName` instead).
+  if (fix_taxon_names && ext == "csv") {
+
+    source(file.path(stage_dirs$animals, "scripts/utils/CleanTaxonNames.R"),
+           local = TRUE)
+
+    abs_cleaned <- file.path(stage_dirs$animals, data_file)
+    taxa_fixed_path <- sub("(\\.csv)?$", "_taxaFixed.csv",
+                           abs_cleaned, ignore.case = TRUE)
+
+    review_abs <- if (!is.null(taxon_review_file))
+      file.path(stage_dirs$animals, taxon_review_file)
+    else
+      NULL
+
+    message("  Running clean_taxon_names() — querying GBIF backbone ...")
+    clean_taxon_names(
+      occ          = abs_cleaned,
+      kingdom      = taxon_kingdom,
+      output_file  = taxa_fixed_path,
+      review_file  = review_abs
+    )
+
+    data_file <- sub(paste0("^", stage_dirs$animals, "/?"), "", taxa_fixed_path)
+    message("  Using taxa-fixed file: ", data_file)
   }
   
   # Verify upstream plant data exists
@@ -771,7 +954,10 @@ run_animal_model <- function(organism,
   # Set global overrides for sourced scripts
   set_stage_wd(stage_dirs$animals)
   .amani_output_dir <<- dirs$animal_model
+  .amani_simulateParallel<<-simulateParallel
+  .amani_simulateNCores<<-simulateNCores
   .amani_redo <<- redo
+  .amani_completenessMethod <<- completenessMethod
   .amani_min_occurrences <<- min_occurrences
   .amani_min_completeness <<- min_completeness
   .amani_min_richness <<- min_richness
@@ -782,8 +968,12 @@ run_animal_model <- function(organism,
   .amani_alphaRichnessMethod <<- alphaRichnessMethod
   .amani_data_file <<- data_file
   .amani_estimateBounds <<- estimateBounds
+  .amani_gammaErrorType <<- gammaErrorType
   .amani_skipRawEndemism<<- skipRawEndemism
+  .amani_animalFilterType<<-animalFilterType
   .amani_fillAnimals<<-fill_animals
+  .amani_simulateRanges<<-simulate_ranges
+  .amani_useSamplingExtension<<-useSamplingExtension
   
   # Expose fill_plants so the sourced scripts can key the plant-richness cache
   # by plant-data type (filled vs unfilled).
@@ -954,11 +1144,14 @@ run_plant_model <- function(redo = TRUE,
   set_stage_wd(stage_dirs$animals)
   .amani_output_dir <<- dirs$animal_model
   .amani_redo <<- redo
+  .amani_completenessMethod <<- completenessMethod
   .amani_min_occurrences <<- min_occurrences
   .amani_min_completeness <<- min_completeness
   .amani_min_richness <<- min_richness
   .amani_disable_outlier_filter <<- FALSE
   .amani_filter_plant_completeness <<- filter_plant_completeness
+  .amani_simulateParallel<<-simulateParallel
+  .amani_simulateNCores<<-simulateNCores
   # Plant verification always uses amplitude-only (self-consistency check)
   .amani_fit_params <<- c("amplitude")
   .amani_alphaRichnessMethod<<-alphaRichnessMethod

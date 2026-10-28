@@ -1,0 +1,4 @@
+"term","type","treatment_iv","sampling_iv","dv","partial_eta_sq","p_fdr","finding","direction"
+"fill_plants:prop_species","interaction","fill_plants","prop_species","abs_prop_error",0.195461749917127,0.00096341709491787,"confirmatory","plant filling flattens the negative prop_species->error slope; benefit largest when prop_species is LOW"
+"fill_plants:sample_mean_range_size","interaction","fill_plants","sample_mean_range_size","abs_prop_error",0.0836411216083817,0.0268767891892353,"exploratory","fill_plants makes the sample_mean_range_size->abs_prop_error slope more negative"
+"fill_plants:sample_mean_range_size","interaction","fill_plants","sample_mean_range_size","bias_prop",0.0790261020227842,0.0268767891892353,"exploratory","fill_plants makes the sample_mean_range_size->bias_prop slope more positive"

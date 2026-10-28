@@ -207,6 +207,7 @@ dev.off()
 animal_grid<-rename_grid_id(animal_grid) #this function is defined in rawEndemismCalculator.R
 
 morphotype_grid_counts <- animal_grid %>%
+  sf::st_drop_geometry() %>%
   distinct(Morphotype, grid_id) %>%
   count(Morphotype, name = "num_grid_cells")
 
@@ -273,9 +274,9 @@ plant_distribution <- plant_grid_counts %>%
   count(num_grid_cells)
 head(plant_distribution)
 
-sum(plant_distribution$n)
+#sum(plant_distribution$n)
 
-plant_grid_counts
+#plant_grid_counts
 
 # Step 3: Plot
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
@@ -422,23 +423,123 @@ dev.off()
 
 ######get the distribution
 colnames(grid_sf)[1]<-"grid_id"
-#species_counts_joined<-st_join(grid_sf, species_counts, by = "grid_id")
 
-species_counts_joined <- grid_sf %>%
-  left_join(
-    sf::st_drop_geometry(species_counts),
-    by = "grid_id"
+#### Cell filter report: maps of ALL original cells (animals and plants) ####
+# Colours cells by Chao1 completeness, richness and occurrence count, plus the
+# plant-minus-animal completeness difference. Retained animal cells are outlined.
+if (exists(".amani_filter_summary", envir = .GlobalEnv) &&
+    !is.null(.amani_filter_summary$cell_table)) {
+
+  animal_cells <- .amani_filter_summary$cell_table
+
+  # Plant per-cell stats for every plant cell (Chao1, same formula as the
+  # optional plant completeness filter below). Occurrence counts live in
+  # `count` for the raw plant data and `n_records` for the filled/interpolated
+  # data, so pick whichever column exists.
+  #
+  # NOTE (downstream usage): when fill_plants = TRUE this table is computed
+  # from the FILLED/interpolated plant data, whose inflated record counts
+  # leave ~no singletons per cell, so plant_completeness collapses to exactly
+  # 1 in every cell. Any DOWNSTREAM use of plant completeness (figures,
+  # summaries, the delta_completeness panel below) that is meant to measure
+  # actual sampling quality should instead be calculated from the RAW
+  # filtered counts (1-FilteringPlantData/output/species_counts4_filtered.rds,
+  # same formula, keyed by grid_id) — NOT from the filled value computed here.
+  plant_tbl <- species_counts |> sf::st_drop_geometry()
+  cnt_col <- if ("count" %in% names(plant_tbl)) "count" else "n_records"
+  plant_cells <- plant_tbl |>
+    dplyr::group_by(grid_id) |>
+    dplyr::summarise(
+      plant_richness    = dplyr::n_distinct(scientificName),
+      plant_occurrences = sum(.data[[cnt_col]]),
+      f1 = sum(.data[[cnt_col]] == 1),
+      f2 = sum(.data[[cnt_col]] == 2),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      plant_chao1 = plant_richness + dplyr::if_else(
+        f2 > 0, f1^2 / (2 * f2), f1 * (f1 - 1) / 2
+      ),
+      plant_completeness = plant_richness / plant_chao1
+    ) |>
+    dplyr::select(-f1, -f2, -plant_chao1)
+
+  # Polygon geometry for plant cells; use grid polygons for animal cells too
+  # if the stored geometry is not polygonal
+  plant_cells_sf <- grid_sf |>
+    dplyr::select(grid_id) |>
+    dplyr::inner_join(plant_cells, by = "grid_id") |>
+    sf::st_transform(sf::st_crs(animal_cells))
+
+  if (!all(sf::st_geometry_type(animal_cells) %in% c("POLYGON", "MULTIPOLYGON"))) {
+    poly <- sf::st_geometry(grid_sf)[match(animal_cells$grid_id, grid_sf$grid_id)]
+    animal_cells <- sf::st_set_geometry(animal_cells,
+                                        sf::st_transform(poly, sf::st_crs(animal_cells)))
+  }
+
+  # Plant-minus-animal completeness: negative = plants less complete
+  delta_cells <- animal_cells |>
+    dplyr::inner_join(sf::st_drop_geometry(plant_cells), by = "grid_id") |>
+    dplyr::mutate(delta_completeness = plant_completeness - animal_completeness)
+
+  saveRDS(list(animal = animal_cells, plant = plant_cells_sf, delta = delta_cells),
+          file.path(plot_data_dir, "plotdata_cell_filter_report.rds"))
+
+  outline_scale <- scale_color_manual(
+    values = c(`TRUE` = "black", `FALSE` = "grey70"),
+    labels = c(`TRUE` = "Retained", `FALSE` = "Filtered out"),
+    name = "Animal cell"
   )
 
-species_counts_overlap <- st_crop(species_counts_joined, overlap_bbox)
+  map_pair <- function(an_var, pl_var, title, fill_name, trans = "identity") {
+    pa <- ggplot(animal_cells) +
+      geom_sf(aes(fill = .data[[an_var]], color = retained), linewidth = 0.4) +
+      scale_fill_viridis_c(name = fill_name, trans = trans) +
+      outline_scale +
+      labs(title = paste("Animals:", title)) +
+      theme_minimal()
+    pp <- ggplot(plant_cells_sf) +
+      geom_sf(aes(fill = .data[[pl_var]]), color = NA) +
+      scale_fill_viridis_c(name = fill_name, trans = trans) +
+      labs(title = paste("Plants:", title)) +
+      theme_minimal()
+    patchwork::wrap_plots(pa, pp, nrow = 1)
+  }
 
-filtered_species_counts <- species_counts_overlap %>%
-  filter(grid_id %in% animal_grid$grid_id)
+  p_delta <- ggplot(delta_cells) +
+    geom_sf(aes(fill = delta_completeness, color = retained), linewidth = 0.4) +
+    scale_fill_gradient2(name = "Plant - animal\ncompleteness",
+                         low = "firebrick", mid = "white", high = "steelblue",
+                         midpoint = 0,
+                         limits = c(-1, 1) * max(abs(delta_cells$delta_completeness), na.rm = TRUE)) +
+    outline_scale +
+    labs(title = "Delta Chao1 completeness (plant - animal), animal grid cells") +
+    theme_minimal()
 
+  ts_cfr <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  pdf(file.path(output_folder, paste0("cell_filter_report_maps_", ts_cfr, ".pdf")),
+      width = 14, height = 7)
+  print(map_pair("animal_completeness", "plant_completeness",
+                 "Chao1 completeness", "Completeness"))
+  print(map_pair("animal_richness", "plant_richness",
+                 "species richness", "Richness"))
+  print(map_pair("animal_occurrences", "plant_occurrences",
+                 "number of occurrences (log10)", "Occurrences", trans = "log10"))
+  print(p_delta)
+  dev.off()
+  message("Cell filter report maps written to: ", output_folder)
+}
 
+# Filter species_counts directly by animal grid IDs — no need to join grid_sf
+# geometry or st_crop since species_counts already has grid_id and we
+# immediately drop geometry anyway. This avoids building ~1.5 GB intermediates.
+species_counts_joined  <- NULL  # keep downstream rm() calls safe
+species_counts_overlap <- NULL
+filtered_species_counts <- NULL
 
-plant_grid_counts <- as.data.table(sf::st_drop_geometry(filtered_species_counts))[
-  , .(num_grid_cells = uniqueN(grid_id)),
+plant_grid_counts <- as.data.table(sf::st_drop_geometry(species_counts))[
+  grid_id %in% animal_grid$grid_id,
+  .(num_grid_cells = uniqueN(grid_id)),
   by = scientificName
 ]
 
@@ -496,6 +597,7 @@ p<-ggplot(plantSpp_distribution, aes(x = num_grid_cells, y = n)) +
   theme_minimal()
 print(p)
 dev.off()
+print("Done with that heavy plot...")
 
 #####compare spatial extent of plant richness and animal richness in the area of overlap######
 
@@ -730,7 +832,28 @@ dev.off()
 
 # Available grid cells — restrict to cells within the Amazon boundary
 # (grid_sf_clipped contains only cells that intersect the Amazon polygon)
-available_grid_ids <- grid_sf$grid_id[grid_sf$grid_id %in% grid_sf_clipped$grid_id]
+#
+# The grid only has cells with plant records, so ~1/3 of the cells inside the
+# basin are missing (a sampling artefact, not habitat) and fragment simulated
+# ranges. Add them back so contiguous range growth sees a gap-free grid.
+# Set .amani_fillGridHoles <- FALSE to use the original holey grid.
+source(file.path(project_root, "2-ModellingAnimals/scripts/utils/fillGridHoles.R"))
+if (isTRUE(get0(".amani_fillGridHoles", envir = .GlobalEnv, ifnotfound = TRUE))) {
+  amazon_boundary <- get0("amazon_shp", envir = .GlobalEnv, ifnotfound = NULL)
+  if (is.null(amazon_boundary)) {
+    amazon_boundary <- sf::st_read(
+      file.path(dirname(getwd()),
+                "0-CuratingPlantData/data/amazon_shapefile/amazon_sensulatissimo_gmm_v1.shp"),
+      quiet = TRUE
+    )
+  }
+  grid_sf <- fill_grid_holes(grid_sf, amazon_boundary, grid_size_m)
+} else {
+  grid_sf$grid_filled <- FALSE
+}
+available_grid_ids <- grid_sf$grid_id[
+  grid_sf$grid_id %in% c(grid_sf_clipped$grid_id, grid_sf$grid_id[grid_sf$grid_filled])
+]
 available_grid_ids <- available_grid_ids[!is.na(available_grid_ids)]
 head(available_grid_ids)
 length(available_grid_ids)
@@ -794,721 +917,57 @@ sampling_weights_neutral <- rep(
 length(sampling_weights_neutral) == length(available_grid_ids)
 
 
-####ok, finally....now take the scaling factor above (animal_max / max(fitted)) and use it to scale all the plant data.
-# # should be the same as above but with a progress bar
-# 
-###original version of the function that works
-# simulateScaledSpeciesRichness <- function(fit_pred, scaling_factor) {
-#   
-#   #plant_fit_max <- max(fit_pred$fitted)
-#   #scaling_factor <- animal_max / plant_fit_max
-#   
-#   # Apply scaling
-#   scaled_plant_distribution <- plant_distribution %>%
-#     mutate(n_scaled = n * scaling_factor)
-#   
-#   # Available grid cells
-#   available_grid_ids <- grid_sf$grid_id
-#   available_grid_ids <- available_grid_ids[!is.na(available_grid_ids)]
-#   
-#   # Initialize list to store simulated species assignments
-#   sim_species_records <- list()
-#   species_counter <- 1
-#   
-#   ## 🔹 Progress bar setup (species-level)
-#   total_species <- sum(round(scaled_plant_distribution$n_scaled), na.rm = TRUE)
-#   
-#   pb <- progress_bar$new(
-#     format = "  Simulating species [:bar] :current/:total (:percent) eta: :eta",
-#     total  = total_species,
-#     clear  = FALSE,
-#     width  = 60
-#   )
-#   
-#   ## 🔹 Simulation loops
-#   for (i in seq_len(nrow(scaled_plant_distribution))) {
-#     
-#     num_sites   <- scaled_plant_distribution$num_grid_cells[i]
-#     num_species <- round(scaled_plant_distribution$n_scaled[i])
-#     
-#     for (j in seq_len(num_species)) {
-#       
-#       pb$tick()  # ← progress update
-#       
-#       if (num_sites <= length(available_grid_ids)) {
-#         
-#         sim_name <- str_glue("SimSpp{str_pad(species_counter, 7, pad = '0')}")
-#         
-#         assigned_cells <- sample(available_grid_ids, num_sites, replace = FALSE)
-#         
-#         sim_occurrences <- data.frame(
-#           scientificName = rep(sim_name, num_sites),
-#           grid_id = assigned_cells,
-#           stringsAsFactors = FALSE
-#         )
-#         
-#         sim_species_records[[species_counter]] <- sim_occurrences
-#         species_counter <- species_counter + 1
-#       }
-#     }
-#   }
-#   
-#   # Combine into one large data frame
-#   sim_species_df <<- bind_rows(sim_species_records)
-#   
-#   # Join to grid_sf to get geometry
-#   sim_species_sf <<- sim_species_df %>%
-#     left_join(grid_sf, by = "grid_id") %>%
-#     st_as_sf()
-#   
-#   ####the line below gives how many species of cockroaches there are under this simulation
-#   output<-length(unique(sim_species_sf$scientificName))
-#   return(output)
-#   
-#  #return(sim_species_records)
-# }
-
-####new version split into two functions
-##inner loop function
-# simulate_species_records <- function(
-#     scaled_plant_distribution,
-#     available_grid_ids,
-#     show_progress = TRUE
-# ) {
-#   rm(sim_records)
-#   sim_species_records <- vector("list", length = sum(round(
-#     scaled_plant_distribution$n_scaled
-#   ), na.rm = TRUE))
-#   
-#   species_counter <- 1
-#   
-#   ## Progress bar (optional)
-#   if (show_progress) {
-#     total_species <- length(sim_species_records)
-#     
-#     pb <- progress::progress_bar$new(
-#       format = "  Simulating species [:bar] :current/:total (:percent) eta: :eta",
-#       total  = total_species,
-#       clear  = FALSE,
-#       width  = 60
-#     )
-#   }
-#   
-#   for (i in seq_len(nrow(scaled_plant_distribution))) {
-#     
-#     num_sites   <- scaled_plant_distribution$num_grid_cells[i]
-#     num_species <- round(scaled_plant_distribution$n_scaled[i])
-#     
-#     for (j in seq_len(num_species)) {
-#       
-#       if (show_progress) pb$tick()
-#       
-#       if (num_sites <= length(available_grid_ids)) {
-#         
-#         sim_name <- stringr::str_glue(
-#           "SimSpp{stringr::str_pad(species_counter, 7, pad = '0')}"
-#         )
-#         
-#         assigned_cells <- sample(
-#           available_grid_ids,
-#           num_sites,
-#           replace = FALSE
-#         )
-#         
-#         sim_species_records[[species_counter]] <- data.frame(
-#           scientificName = rep(sim_name, num_sites),
-#           grid_id = assigned_cells,
-#           stringsAsFactors = FALSE
-#         )
-#         
-#         species_counter <- species_counter + 1
-#       }
-#     }
-#   }
-#   
-#   sim_records<<-sim_species_records[seq_len(species_counter - 1)] #this might be wrong. if the line below is right then this line is unnecessary but i am keeping it in case it is actually correct
-#   return(sim_species_records[seq_len(species_counter - 1)])
-# }
-#######Same as the above function but with simulated species done with local clustering
-#
-# Precomputes a sparse adjacency matrix and derives an adjacency list for fast
-# contiguous range growth. At each step, the frontier (all 8-connected
-# neighbours of the current range not already in the range) is maintained
-# incrementally and one frontier cell is sampled proportional to its
-# plant-occurrence weight.
-
-build_adjacency <- function(grid_sf, grid_size_m) {
-  # Build an 8-connected adjacency list from cell centroid coordinates.
-  # Returns a list of length nrow(grid_sf) where each element is an integer
-  # vector of row indices of neighbouring cells.
-
-  require(Matrix)
-
-  cx <- grid_sf$cx
-  cy <- grid_sf$cy
-  n  <- length(cx)
-  thresh <- grid_size_m * 1.5  # captures orthogonal + diagonal neighbours
-
-  message("  Building adjacency structure for ", n, " grid cells...")
-
-  # Build sparse adjacency matrix in chunks to limit memory from outer()
-  chunk_size <- 2000
-  from_list <- vector("list", ceiling(n / chunk_size))
-  to_list   <- vector("list", ceiling(n / chunk_size))
-
-  for (ch in seq_len(ceiling(n / chunk_size))) {
-    idx_start <- (ch - 1) * chunk_size + 1
-    idx_end   <- min(ch * chunk_size, n)
-    chunk_idx <- idx_start:idx_end
-
-    dx <- outer(cx[chunk_idx], cx, function(a, b) abs(a - b))
-    dy <- outer(cy[chunk_idx], cy, function(a, b) abs(a - b))
-
-    is_nb <- dx <= thresh & dy <= thresh
-    for (r in seq_along(chunk_idx)) {
-      is_nb[r, chunk_idx[r]] <- FALSE
-    }
-
-    wh <- which(is_nb, arr.ind = TRUE)
-    from_list[[ch]] <- chunk_idx[wh[, 1]]
-    to_list[[ch]]   <- wh[, 2]
-  }
-
-  from_vec <- unlist(from_list)
-  to_vec   <- unlist(to_list)
-
-  adj_mat <- sparseMatrix(i = from_vec, j = to_vec, x = 1, dims = c(n, n))
-
-  # Extract adjacency list from column-compressed sparse matrix (fast)
-  adj_list <- vector("list", n)
-  for (i in seq_len(n)) {
-    adj_list[[i]] <- adj_mat@i[adj_mat@p[i]:(adj_mat@p[i + 1] - 1)] + 1L
-  }
-
-  message("  Adjacency: ", n, " cells, ~", round(mean(lengths(adj_list)), 1),
-          " neighbours/cell.")
-  adj_list
-}
-
-
-simulate_species_records_clustered <- function(
-    scaled_plant_distribution,
-    available_grid_ids,
-    grid_sf,
-    adj_list,
-    cell_weights,
-    sampling_weights = sampling_weights_neutral,
-    show_progress = TRUE,
-    jitter_range  = TRUE,    # if TRUE, Poisson-jitter each species target range size
-    estimateBounds=TRUE                       # so species within the same bin get different sizes
-                            # (eliminates point-mass peaks in the output distribution)
-) {
-  # adj_list:     list of integer vectors — adj_list[[i]] = row indices of
-  #               neighbours of cell i in grid_sf.
-  # cell_weights: named numeric vector keyed by grid_id — plant-occurrence
-  #               weights used to bias frontier cell selection during range growth.
-
-  rm(sim_records)
-  sim_species_records <- vector("list", length = sum(round(
-    scaled_plant_distribution$n_scaled
-  ), na.rm = TRUE))
-
-  species_counter <- 1
-  n_cells <- nrow(grid_sf)
-  all_ids <- grid_sf$grid_id
-
-  # Weight vector aligned to grid_sf row order
-  w_vec <- cell_weights[as.character(all_ids)]
-  w_vec[is.na(w_vec)] <- 0
-
-  # ── Frontier exhaustion diagnostics ────────────────────────────────────────────
-  # Track species where contiguous growth hits the reachable frontier before
-  # the target range size is met. Silently truncated species create artificial
-  # peaks at the maximum connected-region size.
-  n_exhausted     <- 0L   # species whose frontier ran out early
-  total_shortfall <- 0L   # cumulative cells short across all truncated species
-  max_shortfall   <- 0L   # worst-case single-species shortfall
-
-  ## Progress bar
-  if (show_progress) {
-    total_species <- length(sim_species_records)
-    pb <- progress::progress_bar$new(
-      format = "  Simulating species [:bar] :current/:total (:percent) eta: :eta",
-      total  = total_species,
-      clear  = FALSE,
-      width  = 60
-    )
-  }
-  
-  #define this so we don't have to recalculate it inside the loop
-  maxCellRange<-length(available_grid_ids)
-  # Pre-allocations outside species loops — avoids per-species alloc/reset
-  visit_gen         <- integer(n_cells)   # in-range stamp: cell in range when visit_gen[r] == current_gen
-  frontier_gen      <- integer(n_cells)   # frontier stamp: cell in frontier when frontier_gen[r] == current_gen
-  current_gen       <- 0L
-  frontier_rows_buf <- integer(n_cells)   # active frontier row indices in positions 1:flen
-  frontier_pos      <- integer(n_cells)   # frontier_pos[r] = position of r in frontier_rows_buf
-  max_id            <- max(all_ids)
-  id_to_row         <- integer(max_id)
-  id_to_row[all_ids] <- seq_len(n_cells) # O(1) grid_id -> row lookup
-  #all_sim_names     <- sprintf("SimSpp%07d", seq_len(length(sim_species_records)))
-  
-  for (i in seq_len(nrow(scaled_plant_distribution))) {
-
-    num_sites   <- scaled_plant_distribution$num_grid_cells[i]
-    num_species <- round(scaled_plant_distribution$n_scaled[i])
-    if (is.na(num_sites) || is.na(num_species) || num_species < 1) next
-    if (is.na(num_sites) || is.na(num_species) || num_species < 1) next
-    
-    for (j in seq_len(num_species)) {
-
-      if (show_progress) pb$tick()
-
-      # ── Per-species range size jitter ────────────────────────────────────
-      # Draw target from Poisson(lambda = bin representative) so species
-      # within the same bin receive different range sizes, dissolving the
-      # point-mass peaks created by assigning all species in a bin the
-      # identical median value.
-      ##smooth out range sizes larger than 50 cells (which is the same threshold for log binning below)
-      # #I added this condition because the binning
-      ##behavior for larger ranged species was resulting in
-      #  #multi-modal distribution. but doing the poisson jitter
-      # #for smaller ranges smooths out the range sizes in an unnatrual way (that doesn't fit the log-normal distribution)
-       
-      num_sites_j <- if (jitter_range && num_sites > 50) {
-        lambda <- min(num_sites, maxCellRange)          # cap lambda before rpois to prevent integer overflow
-        max(1L, min(as.integer(round(rpois(1L, lambda))), maxCellRange + 1L))
-      } else {
-        as.integer(min(num_sites, maxCellRange + 1L))   # also cap the non-jitter path
-      }
-      
-      
-      if (num_sites_j <= maxCellRange) {
-
-        sim_name <- stringr::str_glue(
-          "SimSpp{stringr::str_pad(species_counter, 7, pad = '0')}"
-        )
-
-        # Draw starting cell using plant-occurrence weights
-        starting_cell <- sample(available_grid_ids, 1,
-                                prob = sampling_weights, replace = FALSE)
-        start_row <- match(starting_cell, all_ids)
-
-        if (num_sites_j == 1) {
-          assigned_cells <- starting_cell
-        } else {
-          # --- Contiguous weighted growth via adjacency list ---
-          # Maintain the frontier incrementally: when a cell is added to the
-          # range, remove it from the frontier and add its new neighbors.
-          # Each frontier cell is sampled proportional to its plant weight.
-
-          range_rows <- integer(num_sites_j)
-          range_rows[1] <- start_row
-          #########################
-          # in_range <- logical(n_cells)
-          # in_range[start_row] <- TRUE
-          # actual_size <- 1L
-          # 
-          # # Initialize frontier from neighbors of starting cell
-          # frontier_set <- adj_list[[start_row]]
-          # frontier_set <- frontier_set[!in_range[frontier_set]]
-
-          ###########################The code block below replaces the commented-out version above
-          current_gen          <- current_gen + 1L
-          visit_gen[start_row] <- current_gen
-          actual_size          <- 1L
-          flen                 <- 0L
-          
-          init_nbs <- adj_list[[start_row]]
-          init_nbs <- init_nbs[visit_gen[init_nbs] != current_gen]
-          flen     <- length(init_nbs)
-          if (flen > 0L) {
-            frontier_rows_buf[seq_len(flen)] <- init_nbs
-            frontier_gen[init_nbs]           <- current_gen
-            frontier_pos[init_nbs]           <- seq_len(flen)
-          }
-          #########################
-          
-          #########################
-          # for (step in 2:num_sites_j) {
-          #   if (length(frontier_set) == 0) break
-          # 
-          #   fw <- w_vec[frontier_set]
-          #   if (sum(fw) == 0) fw <- rep(1, length(frontier_set))
-          # 
-          #   new_row <- if (length(frontier_set) == 1) {
-          #     frontier_set
-          #   } else {
-          #     sample(frontier_set, 1, prob = fw)
-          #   }
-          # 
-          #   actual_size <- actual_size + 1L
-          #   range_rows[actual_size] <- new_row
-          #   in_range[new_row] <- TRUE
-          # 
-          #   # Update frontier: remove new_row, add its new neighbours
-          #   frontier_set <- frontier_set[frontier_set != new_row]
-          #   new_nbs <- adj_list[[new_row]]
-          #   new_nbs <- new_nbs[!in_range[new_nbs]]
-          #   frontier_set <- unique(c(frontier_set, new_nbs))
-          # }
-          ###########################The code block below replaces the commented-out version above
-          for (step in 2:num_sites_j) {
-            if (flen == 0L) break
-            
-            active <- frontier_rows_buf[seq_len(flen)]
-            fw     <- w_vec[active]
-            if (sum(fw) == 0) fw[] <- 1
-            
-            new_row <- if (flen == 1L) active else sample(active, 1L, prob = fw)
-            
-            actual_size             <- actual_size + 1L
-            range_rows[actual_size] <- new_row
-            visit_gen[new_row]      <- current_gen
-            
-            # O(1) swap-and-pop removal from frontier buffer
-            pos <- frontier_pos[new_row]
-            if (pos < flen) {
-              last_row               <- frontier_rows_buf[flen]
-              frontier_rows_buf[pos] <- last_row
-              frontier_pos[last_row] <- pos
-            }
-            frontier_pos[new_row] <- 0L
-            frontier_gen[new_row] <- 0L
-            flen <- flen - 1L
-            
-            # Add unvisited non-frontier neighbours (vectorised)
-            new_nbs <- adj_list[[new_row]]
-            add_nbs <- new_nbs[
-              visit_gen[new_nbs]    != current_gen &
-                frontier_gen[new_nbs] != current_gen
-            ]
-            n_add <- length(add_nbs)
-            if (n_add > 0L) {
-              new_pos                    <- (flen + 1L):(flen + n_add)
-              frontier_rows_buf[new_pos] <- add_nbs
-              frontier_pos[add_nbs]      <- new_pos
-              frontier_gen[add_nbs]      <- current_gen
-              flen                       <- flen + n_add
-            }
-          }
-          #########################
-          # ── Log frontier exhaustion ───────────────────────────────────────────
-          if (actual_size < num_sites_j) {
-            shortfall       <- num_sites_j - actual_size
-            n_exhausted     <- n_exhausted + 1L
-            total_shortfall <- total_shortfall + shortfall
-            if (shortfall > max_shortfall) max_shortfall <- shortfall
-          }
-
-          assigned_cells <- all_ids[range_rows[1:actual_size]]
-        }
-
-        sim_species_records[[species_counter]] <- data.frame(
-          scientificName = rep(sim_name, length(assigned_cells)),
-          grid_id = assigned_cells,
-          stringsAsFactors = FALSE
-        )
-
-        species_counter <- species_counter + 1
-      }
-    }
-  }
-
-  sim_records <<- sim_species_records[seq_len(species_counter - 1)]
-
-  # ── Frontier exhaustion summary ───────────────────────────────────────────────
-  n_total <- species_counter - 1L
-  if (n_exhausted > 0L) {
-    message(sprintf(
-      "  Frontier exhaustion: %d / %d species (%.1f%%) had ranges truncated.",
-      n_exhausted, n_total, 100 * n_exhausted / n_total
-    ))
-    message(sprintf(
-      "  Mean shortfall: %.1f cells | Max shortfall: %d cells | Total cells lost: %d",
-      total_shortfall / n_exhausted, max_shortfall, total_shortfall
-    ))
-  } else {
-    message("  Frontier exhaustion: none detected.")
-  }
-}
-
-
-
-
-#wrapper function
-simulateScaledSpeciesRichness <- function(fit_pred, extent_scaling_factor, sampling_weights = sampling_weights_neutral) {
-
-  print(paste0("Simulating Amazonian species with an extent scaling factor of: ", extent_scaling_factor))
-  
-  
-#   scaling_factor<-0.065
-# # Apply scaling
-# scaled_plant_distribution <- plant_distribution %>% #fit_pred should NOT be here. This MUST be plant_distribution, which is the same as fit_pred but for the whole amazon. 
-#   dplyr::mutate(n_scaled = n * scaling_factor)
-
-###leaving scaled_plant_distribution as it is above will be a problem because it results in us dropping more species with large ranges than expected (e.g., if the scaling factor is 0.5 then we drop all range sizes occupied by <2 species. When the scaling factor is very small (e.g. <0.1) this could result in over 1000 species dropped)
-
-# coerce plant_distribution to data.table without copying if possible
-pd <- data.table::as.data.table(plant_distribution)             # expects column num_grid_cells
-
-# ── Log-spaced binning ──────────────────────────────────────────────────
-# Replace the old hard-edged tiered binning (bin_num_grids) with
-# geometrically spaced bin edges. This avoids the abrupt bin-width
-# transitions at 50/200/600 that created artificial density peaks
-# ("attractor values") in the simulated range-size distribution.
-#
-# Log-spacing naturally gives fine resolution at small range sizes
-# (where most species cluster) and progressively coarser resolution
-# at large range sizes — matching the spirit of the original scheme
-# but without hard discontinuities.
-
-n_log_bins <- 80                                                  # tunable; ~80 gives similar
-                                                                  # compression to old scheme
-max_cells  <- max(pd$num_grid_cells, na.rm = TRUE)
-
-# keep range sizes 1–50 unbinned (exact), bin everything above
-# using geometrically spaced edges from 50 to max
-unbinned_threshold <- 50
-
-# rows that stay unbinned (small range sizes, high ecological importance)
-pd_small <- pd[num_grid_cells <= unbinned_threshold]
-pd_large <- pd[num_grid_cells >  unbinned_threshold]
-
-if (nrow(pd_large) > 0) {
-  # create log-spaced bin edges from the threshold to the max value
-  log_edges <- exp(seq(
-    log(unbinned_threshold),
-    log(max_cells + 1),                                           # +1 so max value falls inside last bin
-    length.out = n_log_bins + 1
-  ))
-
-  # assign each large-range row to a log-spaced bin
-  pd_large[, bin_id := findInterval(num_grid_cells, log_edges, rightmost.closed = TRUE)]
-
-  # aggregate: median of original values as representative, sum of counts
-  pd_large_binned <- pd_large[
-    , .(
-      num_grid_cells = round(median(num_grid_cells)),
-      n = sum(n)
-    ),
-    by = bin_id
-  ][order(num_grid_cells)]
-  pd_large_binned[, bin_id := NULL]
-
-  # recombine small (exact) and large (log-binned) portions
-  plant_distribution_binned <- data.table::rbindlist(
-    list(pd_small[, .(num_grid_cells, n)], pd_large_binned)
-  )[order(num_grid_cells)]
-
-} else {
-  # edge case: all range sizes <= threshold (nothing to bin)
-  plant_distribution_binned <- pd_small[, .(num_grid_cells, n)]
-}
-
-# sanity check: total species count is conserved
-stopifnot(abs(sum(plant_distribution_binned$n) - sum(pd$n)) < 0.5)
-
-# ── Apply shape transformation (meanlog shift + sdlog rescaling) ────────
-# If the user selected "meanlog" or "sdlog" in fit_params, the empirical
-# plant distribution's range sizes are warped in log-space before amplitude
-# scaling. This changes the proportion of endemic vs widespread species
-# while preserving the empirical texture of the distribution.
-delta_ml  <- if (exists(".amani_delta_meanlog",     envir = .GlobalEnv)) .amani_delta_meanlog     else 0
-ratio_sd  <- if (exists(".amani_ratio_sdlog",       envir = .GlobalEnv)) .amani_ratio_sdlog       else 1
-ref_ml    <- if (exists(".amani_plant_mdd_meanlog", envir = .GlobalEnv)) .amani_plant_mdd_meanlog else log(2)
-
-if (delta_ml != 0 || ratio_sd != 1) {
-  message("  Applying shape transformation: delta_meanlog = ", round(delta_ml, 4),
-          ", ratio_sdlog = ", round(ratio_sd, 4))
-  plant_distribution_binned <- as.data.frame(plant_distribution_binned)
-  plant_distribution_binned$log_x_new <-
-    ref_ml + delta_ml +
-    (log(plant_distribution_binned$num_grid_cells) - ref_ml) * ratio_sd
-  # plant_distribution_binned$num_grid_cells <-
-  #   pmax(1L, as.integer(round(exp(plant_distribution_binned$log_x_new))))
-  # plant_distribution_binned$log_x_new <- NULL
-  # 
-  # # Re-aggregate: multiple original bins may map to the same integer after transform
-  # plant_distribution_binned <- plant_distribution_binned |>
-  #   dplyr::summarise(n = sum(n), .by = num_grid_cells) |>
-  #   dplyr::arrange(num_grid_cells)
-  
-  plant_distribution_binned$num_grid_cells <-
-    pmax(1, round(exp(plant_distribution_binned$log_x_new)))  # drop as.integer()
-  plant_distribution_binned$log_x_new <- NULL
-  
-  plant_distribution_binned <- plant_distribution_binned |>
-    dplyr::summarise(n = sum(n), .by = num_grid_cells) |>
-    dplyr::filter(!is.na(num_grid_cells)) |>          # drop overflow rows
-    dplyr::arrange(num_grid_cells)
-  
-  
-  
-  
-}
-
-scaled_plant_distribution <- plant_distribution_binned %>%
-     dplyr::mutate(n_scaled = ceiling(n * extent_scaling_factor))
-
-
-# Run simulation
-#options(error = NULL)
-
-grid_sf$centroid <- sf::st_centroid(grid_sf$geometry)      # POINT geometry per grid cell
-# extract numeric centroid coordinates for fast filtering
-cent_coords <- sf::st_coordinates(grid_sf$centroid)         # matrix [n x 2]
-
-# drop polygon geometry from the object used in simulation
-# keeps memory footprint smaller when passing to workers
-grid_centroids <- grid_sf[, c("grid_id")]                  # keep only IDs
-grid_centroids$geometry <- grid_sf$centroid                # replace geometry with centroids
-
-# store coordinates directly on grid_sf for O(1) access
-grid_centroids$cx <- cent_coords[, 1]                               # centroid x
-grid_centroids$cy <- cent_coords[, 2]                               # centroid y
-
-
-grid_sub <- grid_centroids[grid_centroids$grid_id %in% available_grid_ids, ]
-grid_sf$centroid <- NULL  # drop centroid column added above
-rm(grid_centroids, cent_coords); gc()
-
-# Load or build adjacency list (8-connected neighbours)
-adj_cache <- file.path(project_root, "output", "shared", "adjacency_list_amazon.rds")
-if (file.exists(adj_cache)) {
-  message("  Loading cached adjacency list...")
-  adj_saved <- readRDS(adj_cache)
-  # Verify it matches the current grid
-  if (identical(adj_saved$grid_ids, grid_sub$grid_id) &&
-      adj_saved$grid_size_m == grid_size_m) {
-    adj_list <- adj_saved$adj_list
-    message("  Adjacency list loaded (", adj_saved$n_cells, " cells).")
-  } else {
-    message("  Cached adjacency list doesn't match current grid. Rebuilding...")
-    adj_list <- build_adjacency(grid_sub, grid_size_m)
-  }
-  rm(adj_saved)
-} else {
-  adj_list <- build_adjacency(grid_sub, grid_size_m)
-  # Cache for other organisms
-  dir.create(dirname(adj_cache), showWarnings = FALSE, recursive = TRUE)
-  saveRDS(list(adj_list = adj_list, grid_ids = grid_sub$grid_id,
-               n_cells = nrow(grid_sub), grid_size_m = grid_size_m), adj_cache)
-  message("  Adjacency list cached to: ", adj_cache)
-}
-
-# Build named weight vector keyed by grid_id for frontier weighting
-cell_weights <- setNames(sampling_weights, as.character(available_grid_ids))
-
-simulate_species_records_clustered(
-  scaled_plant_distribution = scaled_plant_distribution,
-  available_grid_ids = available_grid_ids,
-  grid_sf = grid_sub,
-  adj_list = adj_list,
-  cell_weights = cell_weights,
-  sampling_weights = sampling_weights,
-  estimateBounds = .amani_estimateBounds)
-
-# Combine into one large data frame
-sim_species_df <- dplyr::bind_rows(sim_records)
-
-# Join to grid_sf to get geometry
-sim_species_sf <- sim_species_df %>%
-  dplyr::left_join(grid_sf, by = "grid_id") %>%
-  sf::st_as_sf()
-
-# Number of simulated species
-length(unique(sim_species_sf$scientificName))
-}
-
-
-
-####the line below gives how many species of animals there are under this simulation
-####This is just a test, so it's commented out
-
-#print("Starting a simulation...this will take long if the animal has a lot of data...")
-#plant_fit_max <- max(fit_pred$fitted)
-#simulateScaledSpeciesRichness(fit_pred, scaling_factor = (animal_max / plant_fit_max))
-
-###there are no error ranges on this because I am using a single scaling factor. 
-
-
-###now i am going to repeat this using the plant sp. range extent distribution unmodified. if it yields roughly the same spp. richness as the raw plant data then the process is working correctly.
-
-
-########Testing simulateScaledSpeciesRichness with the plant data to see if it gets the right answer#############
-# ------------------------------------------------------------
-# only run the estimator sanity check if diagnostics are enabled
-# this prevents expensive simulations from running in production
-# ------------------------------------------------------------
-if (exists("diagnostic") && isTRUE(diagnostic)) {
-  
-  # message to clearly indicate diagnostic mode is active
-  print("checking that the estimator is working by replicating the empirical plant richness")
-  
-  # show the head of the plant spatial-extent distribution as a quick visual sanity check
-  head(plant_distribution)
-  
-  # initialize an empty list to store simulated species records (not strictly needed,
-  # but kept here to mirror the structure of the main simulation logic)
-  sim_species_recordsRaw <- list()
-  
-  # initialize species counter (used internally by the simulator)
-  species_counter <- 1
-  
-  # compute the maximum fitted value from the plant extent model
-  # this represents the reference scale of the empirical distribution
-  plant_fit_max <- max(fit_pred$fitted)
-  
-  # define a neutral scaling factor (plant scaled to itself)
-  # this should reproduce the original plant richness if the estimator is correct
-  extent_scaling_factor <- plant_fit_max / plant_fit_max
-  
-  # apply scaling to the empirical plant distribution
-  # n_scaled should equal n under this neutral scaling
-  
-  scaled_plant_distribution <- plant_distribution %>%
-    mutate(n_scaled = n * extent_scaling_factor)
-  
-  # run the spatial-extent-based richness simulator
-  # this should return a richness value comparable to the empirical data
-  sim_speciesRaw_df <- simulateScaledSpeciesRichness(
-    scaled_plant_distribution,
-    extent_scaling_factor = 1
+# Smoothed frontier weights for contiguous range growth. Raw plant counts are
+# sharply bimodal, so weighting the frontier by them produces lobed, gappy
+# ranges; a Gaussian-smoothed surface keeps the regional sampling signal
+# without the cell-level spikes. Start-cell selection still uses the raw
+# sampling_weights. Plant-only, so cached in output/shared/ across organisms.
+# Set .amani_frontierBandwidth <- 0 to restore the old raw-weight frontier.
+source(file.path(project_root, "2-ModellingAnimals/scripts/utils/smoothFrontierWeights.R"))
+
+# Filled (previously missing) cells have no plant records, so the code above
+# gave them the floor weight. Replace it with a local interpolation from
+# sampled neighbours so they are not treated as unsuitable habitat.
+filled_cells <- grid_sf$grid_filled[match(available_grid_ids, grid_sf$grid_id)]
+sampling_weights <- interpolate_filled_weights(
+  weights = sampling_weights, grid_ids = available_grid_ids,
+  grid_sf = grid_sf, grid_size_m = grid_size_m, filled = filled_cells
+)
+
+frontier_bandwidth <- get0(".amani_frontierBandwidth", envir = .GlobalEnv, ifnotfound = 2)
+frontier_weights <- if (is.numeric(frontier_bandwidth) && frontier_bandwidth > 0) {
+  load_or_build_frontier_weights(
+    raw_weights     = sampling_weights,
+    grid_ids        = available_grid_ids,
+    grid_sf         = grid_sf,
+    grid_size_m     = grid_size_m,
+    fill_plants     = isTRUE(get0(".amani_fill_plants", envir = .GlobalEnv, ifnotfound = FALSE)),
+    bandwidth_cells = frontier_bandwidth,
+    redo            = isTRUE(get0("redoeverything", envir = .GlobalEnv, ifnotfound = FALSE))
   )
-  
-  # check whether simulated richness matches empirical plant richness
-  # unique(unlist()) is defensive in case scientificName is a list-column
-  is_equal <- sim_speciesRaw_df ==
-    length(unique(unlist(species_counts$scientificName)))
-  
-  # compose a human-readable diagnostic message
-  output_text <- if (is_equal) {
-    "The spatial extent based richness estimator is working."
-  } else {
-    "The spatial extent based richness estimator is NOT working."
-  }
-  
-  # generate a timestamp for reproducible diagnostic outputs
-  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-  
-  # construct an informative output filename
-  output_filename <- paste0(
-    "spatEstEst.sanityCheck.",
-    timestamp,
-    ".txt"
-  )
-  
-  # build the full output path inside the results directory
-  path00 <- file.path(output_folder, output_filename)
-  
-  # write the diagnostic result to disk for later inspection
-  writeLines(output_text, con = path00)
-  
+} else {
+  NULL
 }
 
 
-###Good. when i ran it on April 15 and 17 2025 the numbers are exactly the same.
+source(file.path(project_root, "2-ModellingAnimals/scripts/utils/SimulateScaledRichness.R"))
+
+
+# Range-simulation switch for the top-level calls below. Set by run_animal_model()
+# via .amani_simulateRanges; defaults to TRUE for standalone runs of this script.
+# When FALSE, species ranges are not grown (only species counts are produced),
+# which is all that gamma richness and the CI bounds require.
+simulate_ranges <- if (exists(".amani_simulateRanges", envir = .GlobalEnv)) {
+  # TRUE, "BestOnly", and "SkipUpper" all enable range simulation for the
+
+  # best estimate; the upper/lower CI runs are selectively skipped downstream.
+  isTRUE(.amani_simulateRanges) ||
+    identical(.amani_simulateRanges, "BestOnly") ||
+    identical(.amani_simulateRanges, "SkipUpper")
+} else {
+  TRUE
+}
+
 
 ###ok now I am going to use the simulated species extents to do a randomization simulation to get 95% CIs
 
@@ -1574,12 +1033,23 @@ if ( is.null( customScale)) {
 
 
 # run spatially explicit or neutral simulation depending on the flag
+# NOTE (future): When _amani_useSamplingExtension = TRUE, simulateScaledSpeciesRichness()
+# now returns a named vector c(gamma, gamma_lwr, gamma_upr) derived from the
+# extend_richness_from_sampling() prediction interval. Consider replacing the
+# separate upper/lower simulation runs below (upperEstSpRich / lowerEstSpRich,
+# which each run the full simulation again with fit_predUpper / fit_predLower)
+# with these model-derived bounds, which are cheaper to obtain and may represent
+# a conceptually distinct source of uncertainty (sampling model error vs.
+# extent-scaling curve uncertainty). Decide which error source is appropriate
+# to report before making this change.
 if (spatial == "explicit") {
     # spatially explicit simulation (uses empirical / distance-weighted structure)
   gammaRichnessSPRIch <- simulateScaledSpeciesRichness(
     fit_pred,
     extent_scaling_factor = extent_sf_here,
-    sampling_weights = sampling_weights
+    sampling_weights = sampling_weights,
+    frontier_weights = frontier_weights,
+    simulate_ranges = simulate_ranges 
   )
   
 } else {
@@ -1589,21 +1059,74 @@ if (spatial == "explicit") {
   gammaRichnessSPRIch <- simulateScaledSpeciesRichness(
     fit_pred,
     extent_scaling_factor = extent_sf_here,
-    sampling_weights = sampling_weights_neutral
+    sampling_weights = sampling_weights_neutral,
+    simulate_ranges = simulate_ranges
   )
   
 }
 
-# Combine all rows into one data frame
-simulated_occurrence_df <- do.call(rbind, sim_records)
+# Determine which error-bound mode to apply throughout this section.
+# "full"   -> run separate upper/lower simulations (extent-curve bootstrap CI);
+#             report gamma_upr of upperEstSpRich and gamma_lwr of lowerEstSpRich.
+# "narrow" -> skip upper/lower simulations; report gamma_upr / gamma_lwr from
+#             the best-estimate run only (sampling-model prediction interval).
+gammaErrorType <- get0(".amani_gammaErrorType", envir = .GlobalEnv, ifnotfound = "full")
+message("  gammaErrorType = '", gammaErrorType, "'")
+
+# Extract narrow bounds from the best-estimate simulation return value.
+# Only available when .amani_useSamplingExtension = TRUE, which causes
+# simulateScaledSpeciesRichness() to return a named c(gamma, gamma_lwr, gamma_upr).
+# Falls back to NA when the sampling extension is off (plain-integer return).
+if (is.numeric(gammaRichnessSPRIch) && !is.null(names(gammaRichnessSPRIch))) {
+  gamma_lwr_narrow <- unname(gammaRichnessSPRIch["gamma_lwr"])
+  gamma_upr_narrow <- unname(gammaRichnessSPRIch["gamma_upr"])
+} else {
+  gamma_lwr_narrow <- NA_real_
+  gamma_upr_narrow <- NA_real_
+}
+
+# Capture the sampling-extension-model result from THIS (best-estimate) run only.
+# simulateScaledSpeciesRichness() also invokes the sampling extension model
+# internally for the upper/lower bound re-simulations further below, and each
+# call overwrites the global `gammaRichnessFromSamplingModel` via <<-. Without
+# snapshotting it here, anything read from that global later in the script
+# (e.g. in the report) would silently reflect the lower-bound run's fit curve
+# instead of the best estimate's, which is the bug reported downstream.
+gammaRichnessFromSamplingModel_best <- if (
+  isTRUE(get0(".amani_useSamplingExtension", envir = .GlobalEnv, ifnotfound = FALSE)) &&
+  exists("gammaRichnessFromSamplingModel", envir = .GlobalEnv)
+) {
+  gammaRichnessFromSamplingModel
+} else {
+  NULL
+}
+
+# The simulation now exposes the combined occurrence table directly as a compact
+# data.table (simulated_occurrence_dt), replacing the old list-of-data.frames
+# `sim_records` that was rbind-ed here (which duplicated the whole table in RAM).
+simulated_occurrence_df <- as.data.frame(simulated_occurrence_dt)
 head(simulated_occurrence_df)
 
-###export this reslt, as it is the main output of this model, and can be used downstream to estimate other things
+###export this result, as it is the main output of this model, and can be used downstream to estimate other things
 print("Joining simulated species with spatial geometry for exportation...")
 
-geom_tbl <- as.data.table(species_counts)[
-  , .SD[1], by = grid_id
-][, .(grid_id, geometry)]
+### Speed-up: build geometry lookup from compact grid_sf (10k rows) instead
+### of deduplicating the full species_counts table (~16.8M rows).
+needed_ids <- unique(simulated_occurrence_df$grid_id)
+
+if (all(needed_ids %in% grid_sf$grid_id)) {
+  geom_tbl <- as.data.table(grid_sf)[, .(grid_id, geometry)]
+} else {
+  warning(
+    "grid_sf does not cover all grid_ids in simulated_occurrence_df; ",
+    "falling back to slower lookup derived from species_counts."
+  )
+  first_idx <- which(!duplicated(species_counts$grid_id))
+  geom_tbl <- data.table::data.table(
+    grid_id  = species_counts$grid_id[first_idx],
+    geometry = sf::st_geometry(species_counts)[first_idx]
+  )
+}
 
 
 simulated_occurrence_sf_TOEXPORT <-
@@ -1627,7 +1150,7 @@ gammaRichnessEst<-length(unique(simulated_occurrence_df$scientificName))
 print(gammaRichnessEst)
 
 
-###########Get 90% CI's for the extent-based gamma diversity estimator#################
+###########Get CI's for the extent-based gamma diversity estimator surrogate model#################
 # Original data
 x_vals <- plant_df$num_grid_cells
 y_vals <- plant_df$n
@@ -1700,8 +1223,8 @@ boot_preds <- replicate(n_boot, {
 # Calculate summary statistics across bootstraps
 ci_df <- data.frame(
   num_grid_cells = x_pred,
-  lower = apply(boot_preds, 1, function(x) quantile(x, 0.001, na.rm = TRUE)),
-  upper = apply(boot_preds, 1, function(x) quantile(x, 0.999, na.rm = TRUE)),
+  lower = apply(boot_preds, 1, function(x) quantile(x, 0.025, na.rm = TRUE)),
+  upper = apply(boot_preds, 1, function(x) quantile(x, 0.975, na.rm = TRUE)),
   median = apply(boot_preds, 1, function(x) median(x, na.rm = TRUE))
 
 )
@@ -1765,9 +1288,9 @@ p<-ggplot(ci_df, aes(x = num_grid_cells)) +
   geom_line(aes(y = y_pred), color = "steelblue", size = 1.2, linetype = "dashed") +
   geom_line(aes(y = y_predUpper), color = "steelblue", size = 1.2, linetype = "dashed") +
   labs(
-    title = "Log-normal Fit to Lower Confidence Interval",
+    title = "Log-normal Fit to Confidence Interval Bounds",
     x = "Number of Grid Cells",
-    y = "Lower 95% CI",
+    y = "95% CI",
     caption = "Dashed lines = fitted log-normal curve of upper and lower CI"
   ) +
   geom_point(data = plant_df, aes(x = num_grid_cells, y = n), size = 3, color = "darkgreen") +
@@ -1807,8 +1330,17 @@ print("Calculating gamma richness of animal based on species richness scaling, w
 plant_fit_max <- max(fit_predUpper$fitted)
 colnames(fit_predUpper)[2]<-"n"
 
-if ( !.amani_estimateBounds){
-  upperEstSpRich<-9999999999
+if ( !.amani_estimateBounds || gammaErrorType == "narrow"){
+  # Skip the full upper-bound simulation: either bounds are disabled globally,
+  # or "narrow" mode uses the sampling-model prediction interval instead.
+  upperEstSpRich <- NA_real_
+  
+} else if (identical(.amani_simulateRanges, "BestOnly") || identical(.amani_simulateRanges, "SkipUpper")) {
+  # BestOnly: ranges were only simulated for the best estimate; skip both CI re-runs.
+  # SkipUpper: skip the upper-bound re-simulation only (lower still runs below).
+  # Both fall back to the sampling-model prediction upper interval.
+  upperEstSpRich <- gamma_upr_narrow
+  message("  ", .amani_simulateRanges, ": skipping upper-bound re-simulation; upperEstSpRich <- gamma_upr_narrow = ", gamma_upr_narrow)
   
 }else
 {
@@ -1822,7 +1354,9 @@ if ( is.null( customScale)) {
     upperEstSpRich <- simulateScaledSpeciesRichness(
       fit_predUpper,
       extent_scaling_factor = extent_sf_here,
-      sampling_weights = sampling_weights
+      sampling_weights = sampling_weights,
+      frontier_weights = frontier_weights,
+      simulate_ranges = simulate_ranges   # only the species count is needed for the CI bound
     )
     
   } else {
@@ -1832,7 +1366,8 @@ if ( is.null( customScale)) {
     upperEstSpRich <- simulateScaledSpeciesRichness(
       fit_predUpper,
       extent_scaling_factor = extent_sf_here,
-      sampling_weights = sampling_weights_neutral
+      sampling_weights = sampling_weights_neutral,
+      simulate_ranges = simulate_ranges   # only the species count is needed for the CI bound
     )
     
   }
@@ -1855,8 +1390,16 @@ plant_fit_max <- max(fit_predLower$fitted)
 ###allows specifying a custom scaling factor (mostly for troubleshooting)
 
 
-if ( !.amani_estimateBounds){
-  lowerEstSpRich<-0
+if ( !.amani_estimateBounds || gammaErrorType == "narrow"){
+  # Skip the full lower-bound simulation: either bounds are disabled globally,
+  # or "narrow" mode uses the sampling-model prediction interval instead.
+  lowerEstSpRich <- NA_real_
+  
+} else if (identical(.amani_simulateRanges, "BestOnly")) {
+  # Range simulation was run for the best estimate only; skip the lower-bound
+  # re-simulation and fall back to the sampling-model prediction lower interval.
+  lowerEstSpRich <- gamma_lwr_narrow
+  message("  BestOnly: skipping lower-bound re-simulation; lowerEstSpRich <- gamma_lwr_narrow = ", gamma_lwr_narrow)
   
 }else
 {
@@ -1871,7 +1414,9 @@ if ( is.null( customScale)) {
     lowerEstSpRich <- simulateScaledSpeciesRichness(
       fit_predLower,
       extent_scaling_factor = extent_sf_here,
-      sampling_weights = sampling_weights
+      sampling_weights = sampling_weights,
+      frontier_weights = frontier_weights,
+      simulate_ranges = simulate_ranges    # only the species count is needed for the CI bound
     )
     
   } else {
@@ -1881,7 +1426,8 @@ if ( is.null( customScale)) {
     lowerEstSpRich <- simulateScaledSpeciesRichness(
       fit_predLower,
       extent_scaling_factor = extent_sf_here,
-      sampling_weights = sampling_weights_neutral
+      sampling_weights = sampling_weights_neutral,
+      simulate_ranges = simulate_ranges    # only the species count is needed for the CI bound
     )
     
   }
@@ -1894,31 +1440,164 @@ if ( is.null( customScale)) {
   
 }}
 
+# Surrogate-only bounds: total species count from the plant CI curves
+# *without* the sampling-extension correction.  Uses column position [[2]]
+# because the upper frame is renamed "n" on line 1170 while the lower frame
+# may still be called "fitted" if bounds were skipped.
+partialGamma_upr <- round(sum(fit_predUpper[[2]] * (animal_max / max(fit_predUpper[[2]]))))
+partialGamma_lwr <- round(sum(fit_predLower[[2]] * (animal_max / max(fit_predLower[[2]]))))
+
+# Resolve the final upper/lower bounds to report, based on gammaErrorType.
+# "full"   -> gamma_upr of the upperEstSpRich run  +  gamma_lwr of the lowerEstSpRich run
+#             (widest CI: both extent-curve bootstrap uncertainty AND sampling-model PI)
+# "narrow" -> gamma_upr and gamma_lwr from the best-estimate run only
+#             (cheaper; captures sampling-model prediction interval without re-running simulation)
+if (gammaErrorType == "full") {
+  gamma_upr_report <- if (is.numeric(upperEstSpRich) && !is.null(names(upperEstSpRich))) {
+    unname(upperEstSpRich["gamma_upr"])
+  } else {
+    upperEstSpRich   # plain-integer fallback (sampling extension off)
+  }
+  gamma_lwr_report <- if (is.numeric(lowerEstSpRich) && !is.null(names(lowerEstSpRich))) {
+    unname(lowerEstSpRich["gamma_lwr"])
+  } else {
+    lowerEstSpRich   # plain-integer fallback
+  }
+} else {
+  # "narrow": pull bounds directly from best-estimate simulation
+  gamma_upr_report <- gamma_upr_narrow
+  gamma_lwr_report <- gamma_lwr_narrow
+}
+
+# "Best estimate from plant surrogate model" should be the surrogate-only
+# figure (partialGamma), i.e. before the sampling-extension correction is
+# applied — not gammaRichnessEst, which (when the extension is active) is the
+# stochastic realization of the *corrected* (post-extension) distribution.
+# Using gammaRichnessEst here mislabeled the corrected estimate as the
+# surrogate-only one, and — because it was compared against a stale/overwritten
+# gammaRichnessFromSamplingModel (see snapshot above) — could appear
+# inconsistent with the reported bounds.
+gammaRichnessEst_report <- if (!is.null(gammaRichnessFromSamplingModel_best)) {
+  gammaRichnessFromSamplingModel_best$partialGamma
+} else {
+  gammaRichnessEst
+}
 
 output_text <- paste0(
   "Gamma Richness Estimate (spatial extent scaling)\n",
   "================================================\n\n",
   "Fit parameters:    [", paste(fit_params, collapse = ", "), "]\n",
+  "Plant range filling...",  if (isTRUE(get0(".amani_fill_plants", envir = .GlobalEnv, ifnotfound = FALSE))){"was used."}else{"was not used."},
+  "Amazonian Animal gamma richness calculated from: ", if (isTRUE(get0(".amani_useSamplingExtension", envir = .GlobalEnv, ifnotfound = FALSE))) {"plant surrogate model + animal sampling extension model.\n"}else{"plant surrogate model\n"},
   "Extent scaling factor: ", round(animal_max / max(fit_pred$n), 6), "\n",
   "delta_meanlog:     ", round(.amani_delta_meanlog, 6),
     ifelse("meanlog" %in% fit_params, " (active)", " (off)"), "\n",
   "ratio_sdlog:       ", round(.amani_ratio_sdlog, 6),
     ifelse("sdlog" %in% fit_params, " (active)", " (off)"), "\n",
-  "Best estimate:     ", gammaRichnessEst, " species\n",
-  "Upper bound:       ", upperEstSpRich, " species\n",
-  "Lower bound:       ", lowerEstSpRich, " species\n\n",
-  "Description: Projected total animal species richness of the Amazon ",
+  "Best estimate from plant surrogate model:     ", gammaRichnessEst_report, " species\n",
+  "Upper bound (plant CI):  ", partialGamma_upr, " species\n",
+  "Lower bound (plant CI):  ", partialGamma_lwr, " species\n\n",
+  
+  if (!is.null(gammaRichnessFromSamplingModel_best)) {
+    smp <- gammaRichnessFromSamplingModel_best
+    paste0(
+      "Expected proportional richness shortfall of surrogate model: ", smp$signed_prop_error, ". \n",
+      "Best estimate from total model (surrogate + extension if used):     ", smp$fullGamma, " species. \n",
+      "Upper bound:       ", smp$fullGamma_upr, " species\n",
+      "Lower bound:       ", smp$fullGamma_lwr, " species\n\n"
+    )
+  } else {
+    "Sampling extension model was not used.\n\n"
+  },
+  
+  
+  "Description of surrogate model: Projected total animal species richness of the Amazon ",
   "based on a log-normal distribution of plant spatial extents rescaled ",
-  "to match observed animal data. Bounds are based on bootstrap resampling ",
-  "at 95% and 105% of the original dataset size.\n\n",
+  "to match observed animal data. ",
+  if (gammaErrorType == "full") {
+    "Bounds (full mode): re-ran simulation on bootstrap CI curves of the plant extent model (95%/105% resampling).\n\n"
+  } else {
+    "Bounds (narrow mode): gamma_upr and gamma_lwr from the sampling-model prediction interval of the best-estimate run only.\n\n"
+  },
   "Shape-shifting: When fit_params includes 'meanlog' or 'sdlog', the ",
   "empirical plant range-size distribution is warped in log-space to match ",
-  "the animal's MDD spatial extent shape before amplitude scaling."
+  "the animal data's Amazonian spatial extent shape before amplitude scaling.",
+  
+  "Description of animal sampling extension model: Surrogate model shows predictable richness shortfalls in simulation, based mostly on incomplete sampling of species (also endemism of the sites being sampled and sampling evenness across sites). The surrogate model is a multi-dimensional linear model (parameterized in simulation) that takes the predicted gamma of the surrogate model and extends it to the predicted actual gamma. The particular model used varies depending on if the fill_plants option was used."
 )
 
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
 output_path <- file.path(output_folder, paste0("gamma_richnessfromSPRICH.", timestamp, ".txt"))
 writeLines(output_text, con = output_path)
+
+#### Sampling extension model parameter report ####
+# Written only when .amani_useSamplingExtension is TRUE and the model ran
+# (i.e., gammaRichnessFromSamplingModel was populated by simulateScaledSpeciesRichness).
+if (!is.null(gammaRichnessFromSamplingModel_best)) {
+
+  se <- gammaRichnessFromSamplingModel_best  # shorthand; snapshot from the best-estimate run
+
+  sampling_ext_report <- paste0(
+    "=======================================================\n",
+    " Sampling Extension Model — Parameter Report\n",
+    " Generated: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n",
+    "=======================================================\n\n",
+
+    "--- Model configuration ---\n",
+    "  fill_Plants:       ", se$fill_Plants, "\n",
+    "    (selects which sub-model was used: plant ranges filled vs. empirical)\n\n",
+
+    "--- Input predictors (supplied to the linear model) ---\n",
+    "  comp_spread:            ", round(se$comp_spread, 6),
+    "  (max - min per-cell ", se$comp_completeness_method, " completeness)\n",
+    "  comp_mean:              ", round(se$comp_mean, 6),
+    "  (mean per-cell ", se$comp_completeness_method, " completeness)\n",
+    "  prop_species (proxy):   ", round(se$prop_species_used, 6),
+    "  (", se$prop_species_method, " regional completeness across grid cells; proxy for prop. of true species observed)\n",
+    "    Chao2 inputs: S_obs = ", se$prop_species_chao2_Sobs,
+    ", Q1 = ", se$prop_species_chao2_Q1,
+    ", Q2 = ", se$prop_species_chao2_Q2,
+    ", S_Chao2 = ", round(se$prop_species_chao2_est, 2), "\n",
+    "  comp_sd:                ", round(se$comp_sd, 6),
+    "  (SD of per-cell ", se$comp_completeness_method, " completeness)\n",
+    "  n_grid_cells (raw):     ", se$n_grid_cells_raw,
+    "  (number of occupied grid cells; log-transformed internally)\n",
+    "  n_grid_cells (log):     ", round(log(se$n_grid_cells_raw), 6), "\n",
+    "  sample_mean_range_size: ", round(se$sample_mean_range_size, 6),
+    "  (weighted mean range size across animal morphotypes, in grid cells)\n",
+    "  delta_meanlog:          ", round(se$delta_meanlog_used, 6),
+    "  (animal - plant log-normal meanlog shift; ", ifelse("meanlog" %in% fit_params, "active", "off — using plant shape"), ")\n",
+    "  ratio_sdlog:            ", round(se$ratio_sdlog_used, 6),
+    "  (animal / plant log-normal sdlog ratio; ", ifelse("sdlog" %in% fit_params, "active", "off — using plant shape"), ")\n\n",
+
+    "--- Model output ---\n",
+    "  partialGamma:           ", se$partialGamma,
+    "  (total species from plant surrogate model, before correction)\n",
+    "  abs_prop_error:         ", round(se$signed_prop_error, 6),
+    "  (predicted proportional richness shortfall of surrogate model)\n",
+    "  correction_factor:      ", round(se$correction_factor, 6),
+    "  (= 1 + abs_prop_error; multiplied uniformly across range-size bins)\n",
+    "  fullGamma (best):       ", round(se$fullGamma, 2),
+    "  species  (= partialGamma * correction_factor)\n",
+    "  fullGamma (lower 95%):  ", round(se$fullGamma_lwr, 2), " species\n",
+    "  fullGamma (upper 95%):  ", round(se$fullGamma_upr, 2), " species\n\n",
+
+    "--- Interpretation ---\n",
+    "  The linear model predicts that this dataset's surrogate gamma underestimates\n",
+    "  true richness by ~", round(se$signed_prop_error * 100, 1), "% given the observed sampling\n",
+    "  characteristics. Applying correction_factor = ", round(se$correction_factor, 4),
+    " to each range-size bin\n",
+    "  before simulation yields the corrected fullGamma above.\n\n",
+
+    "=======================================================\n"
+  )
+
+  timestamp_se <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  se_report_path <- file.path(output_folder,
+                              paste0("sampling_extension_report_", timestamp_se, ".txt"))
+  writeLines(sampling_ext_report, con = se_report_path)
+  message("Sampling extension report written to: ", se_report_path)
+}
 
 #### Optional: filter plant cells by Chao1 sampling completeness ########
 # When .amani_filter_plant_completeness is set, only plant grid cells with
@@ -1926,6 +1605,12 @@ writeLines(output_text, con = output_path)
 # below. This reduces sample size but strengthens the signal by removing
 # poorly-sampled plant cells. The filter applies ONLY to the correlations,
 # not to the rest of the pipeline.
+#
+# NOTE: completeness here is computed from the RAW filtered counts
+# (species_counts4_filtered.rds), not species_counts, because species_counts is
+# the FILLED plant data when fill_plants = TRUE (completeness would be ~1).
+# The plant_completeness column in the cell-filter report above still uses
+# species_counts.
 
 #NOTE: Should this be incorporated earlier in the workflow? 
 
@@ -1940,14 +1625,21 @@ if (!is.null(filter_plant_comp) && is.numeric(filter_plant_comp)) {
   message("Computing plant Chao1 completeness for correlation filtering (threshold = ",
           filter_plant_comp, ")...")
 
-  plant_chao1_stats <- species_counts |>
-    sf::st_drop_geometry() |>
+  # Occurrence counts live in `count` (raw plant data) or `n_records`
+  # (filled/interpolated data) — pick whichever exists.
+  # Always use RAW (unfilled) counts: with fill_plants = TRUE, species_counts
+  # is interpolated and completeness would be ~1 everywhere.
+  raw_plant_counts <- readRDS(file.path(dataDir, "species_counts4_filtered.rds"))
+  plant_tbl2 <- raw_plant_counts |> sf::st_drop_geometry()
+  rm(raw_plant_counts)
+  cnt_col2 <- if ("count" %in% names(plant_tbl2)) "count" else "n_records"
+  plant_chao1_stats <- plant_tbl2 |>
     dplyr::group_by(grid_id) |>
     dplyr::summarise(
-      plant_n_occ     = sum(count),
+      plant_n_occ     = sum(.data[[cnt_col2]]),
       plant_n_species = dplyr::n_distinct(scientificName),
-      f1 = sum(count == 1),
-      f2 = sum(count == 2),
+      f1 = sum(.data[[cnt_col2]] == 1),
+      f2 = sum(.data[[cnt_col2]] == 2),
       .groups = "drop"
     ) |>
     dplyr::mutate(
@@ -2002,6 +1694,12 @@ endemism_joined <- rename_grid_id(endemism_joined)
 endemism_joined <- endemism_joined %>%
   filter(!is.na(raw_endemism), !is.na(animal_endemism_count))
 
+endemism_model_ok <- nrow(endemism_joined) >= 3
+if (!endemism_model_ok) {
+  warning("Only ", nrow(endemism_joined),
+          " cells available for endemism correlation — model will be degenerate.",
+          call. = FALSE)
+}
 endemism_model <- lm(animal_endemism_count ~ raw_endemism, data = endemism_joined)
 
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
@@ -2137,7 +1835,7 @@ correlation_report <- paste0(
   " Generated: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n",
   "=======================================================\n\n",
   "--- Filter settings ---\n",
-  "Animal cell filter:            ", ifelse(n_animal_cells < nrow(grid_sf), "ON", "OFF"), "\n",
+  "Animal cell filter:            ", ifelse(n_animal_cells < sum(!grid_sf$grid_filled), "ON", "OFF"), "\n",
   "  Animal cells used:           ", n_animal_cells, "\n",
   "Plant completeness filter:     ",
     ifelse(is.null(filter_plant_comp), "OFF", paste0(">= ", filter_plant_comp)), "\n",
@@ -2145,16 +1843,22 @@ correlation_report <- paste0(
   "  Applied to richness corr:    ", ifelse(plant_filter_used_richness, "YES", "NO (< 15 cells or OFF)"), "\n\n",
   "--- Endemism correlation (animal endemism ~ plant raw endemism) ---\n",
   "  Cells:       ", n_endemism_cells, "\n",
-  "  R²:          ", round(endemism_summ$r.squared, 4), "\n",
-  "  Adj. R²:     ", round(endemism_summ$adj.r.squared, 4), "\n",
-  "  F-statistic: ", round(endemism_summ$fstatistic[1], 2),
-  " (df = ", endemism_summ$fstatistic[2], ", ", endemism_summ$fstatistic[3], ")\n",
-  "  p-value:     ", format.pval(pf(endemism_summ$fstatistic[1],
-                                     endemism_summ$fstatistic[2],
-                                     endemism_summ$fstatistic[3],
-                                     lower.tail = FALSE), digits = 4), "\n",
-  "  Slope:       ", round(coef(endemism_model)[2], 4),
-  " (SE = ", round(endemism_summ$coefficients[2, 2], 4), ")\n\n",
+  if (endemism_model_ok && !is.null(endemism_summ$fstatistic)) {
+    paste0(
+      "  R²:          ", round(endemism_summ$r.squared, 4), "\n",
+      "  Adj. R²:     ", round(endemism_summ$adj.r.squared, 4), "\n",
+      "  F-statistic: ", round(endemism_summ$fstatistic[1], 2),
+      " (df = ", endemism_summ$fstatistic[2], ", ", endemism_summ$fstatistic[3], ")\n",
+      "  p-value:     ", format.pval(pf(endemism_summ$fstatistic[1],
+                                         endemism_summ$fstatistic[2],
+                                         endemism_summ$fstatistic[3],
+                                         lower.tail = FALSE), digits = 4), "\n",
+      "  Slope:       ", round(coef(endemism_model)[2], 4),
+      " (SE = ", round(endemism_summ$coefficients[2, 2], 4), ")\n\n"
+    )
+  } else {
+    "  ** Insufficient data for reliable endemism model (< 3 cells) **\n\n"
+  },
   "--- Richness correlation (animal richness ~ plant richness) ---\n",
   "  Cells:       ", n_richness_cells, "\n",
   "  R²:          ", round(richness_summ$r.squared, 4), "\n",

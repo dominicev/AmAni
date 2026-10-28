@@ -32,7 +32,6 @@ sample_Species <-function(true_animal_occ_data, prop_species = 0.8){
   return(speciesSample)
 }
 
-
 sample_Species_perSite <- function(siteSample, prop_species = 0.8, min_prop_species = prop_species) {
   dt <- as.data.table(siteSample)
   

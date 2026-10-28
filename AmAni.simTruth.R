@@ -1,4 +1,4 @@
-#This notebook will take the combined raw data in "C:\Users\dominice\OneDrive - University of Illinois - Urbana\Projects\Peruvian Blattodea\Cockroaches in a coal mine\AmAni\5-SensitivityTesting\data\rawData"
+#This notebook takes the combined dataset in "2-ModellingAnimals/data/allCombined"
 #and use the animal model to generate complete distributions for these species.
 #This is an improvement from the raw data because the species in this dataset will 
 #have more complete range data. Whereas the raw data are likely to have very spotty range data. 

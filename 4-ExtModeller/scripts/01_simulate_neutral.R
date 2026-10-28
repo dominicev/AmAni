@@ -236,21 +236,23 @@ if (exists(".amani_animal_model_dir")) {
 }
 sim_files <- list.files(
   path       = animalModelDir,                         # directory containing simulation outputs
-  pattern    = "^simulatedOccurencesForAnimal.*\\.rds$",# regex: files starting with name, ending in .csv
-  full.names = TRUE                                   # return full paths (required for read.csv)
+  pattern    = "^simulatedOccurencesForAnimal\\.rds$",  # main output only; never the _lite cache
+  full.names = TRUE
 )
+if (length(sim_files) == 0) stop("simulatedOccurencesForAnimal.rds not found in: ", animalModelDir)
 
-simAnimalObj <- readRDS(sim_files[1])                  # path to .rds file
-
-geom_types <- st_geometry_type(
-  simAnimalObj,              # sf object with geometry column
-  by_geometry = TRUE         # one geometry type per row
-)
-# quick overview: how many of each geometry type?
-table(geom_types)
-
-# confirm the coordinate reference system (this is critical for grid alignment)
-st_crs(simAnimalObj)                              # prints CRS; note EPSG and units
+# Load lightweight (geometry-free) cache if available; otherwise create it
+lite_file <- sub("\\.rds$", "_lite.rds", sim_files[1])
+# Reuse the cache only if it is newer than the main output (avoids stale caches)
+if (file.exists(lite_file) && file.mtime(lite_file) >= file.mtime(sim_files[1])) {
+  simAnimalObj <- readRDS(lite_file)
+  message("Loaded lightweight data: ", lite_file)
+} else {
+  simAnimalObj <- readRDS(sim_files[1])
+  simAnimalObj <- sf::st_drop_geometry(simAnimalObj)
+  saveRDS(simAnimalObj, lite_file)
+  message("Created lightweight cache: ", lite_file)
+}
 
 ###import/make the grid
 
@@ -268,7 +270,7 @@ grid_sf <- st_sf(grid_id = 1:length(grid), geometry = grid)
 
 
 st_crs(grid_sf)                                   # CRS of the grid
-all.equal(st_crs(simAnimalObj), st_crs(grid_sf))  # sanity check CRS match
+# CRS check skipped — grid_id already assigned in Stage 2
 
 grid_areas_m2 <- st_area(grid_sf)                 # area of each grid cell in m²
 summary(as.numeric(grid_areas_m2))                 # should be nearly constant 
@@ -276,27 +278,15 @@ summary(as.numeric(grid_areas_m2))                 # should be nearly constant
 # convert grid cell area to km² for reporting
 grid_areas_km2 <- as.numeric(grid_areas_m2) / 1e6 # m² → km²
 summary(grid_areas_km2)                            # expected grid size in km²
-simAnimal_sf<-simAnimalObj
-
-# ensure CRS match so spatial join is valid
-if (st_crs(simAnimal_sf) != st_crs(grid_sf)) {
-  simAnimal_sf <- st_transform(simAnimal_sf, st_crs(grid_sf))  # reproject points only
-}
-
-
-# remove rows with missing species names
-# NA scientificName cannot contribute to species richness
-simAnimal_tbl <- simAnimal_sf |> 
-  filter(!is.na(scientificName))            # keep only valid species names
+# simAnimalObj is now a plain data.frame (geometry-free) — no CRS transform needed
+simAnimal_tbl <- simAnimalObj[!is.na(simAnimalObj$scientificName), ]
 
 # count number of unique species per grid cell
-# n_distinct() ensures multiple occurrences of the same species in a grid
-# are only counted once
-species_richness_by_grid <- simAnimal_tbl |> 
-  group_by(grid_id) |>                      # group by grid cell ID
-  summarise(
-    species_richness = n_distinct(scientificName),  # unique species count per grid
-    .groups = "drop"                        # return an ungrouped data.frame
+species_richness_by_grid <- simAnimal_tbl |>
+  dplyr::group_by(grid_id) |>
+  dplyr::summarise(
+    species_richness = dplyr::n_distinct(scientificName),
+    .groups = "drop"
   )
 
 
@@ -311,8 +301,7 @@ species_richness_by_grid$species_richness[
 # this restores the correct geometry for mapping
 grid_sf_with_richness <- grid_sf |>
   left_join(
-    species_richness_by_grid |> 
-      st_drop_geometry(),          # drop point geometry before join
+    species_richness_by_grid,
     by = "grid_id"
   )
 

@@ -27,7 +27,7 @@ rename_grid_id <- function(df) {
 #
 # Args:
 #   cell_stats  A data frame with columns: grid_id, n_occurrences,
-#               n_species, f1, f2, chao1, completeness (as produced
+#               n_species, f1, f2, richness_est, completeness (as produced
 #               by the cell filter block in ModelAnimal.R).
 #   discovery_rate_pct  The discovery rate must drop to this fraction
 #               of the baseline rate (measured at 5–15 occurrences)
@@ -115,8 +115,8 @@ estimate_filter_thresholds <- function(
   # distribution isn't dominated by very sparse cells.
   occ_floor <- if (!is.na(est_min_occ)) min(est_min_occ, 30) else 30
   comp_data <- cell_stats |>
-    dplyr::filter(n_occurrences >= occ_floor) |>
-    dplyr::mutate(relative_gap = (chao1 - n_species) / n_species)
+    dplyr::filter(n_occurrences >= occ_floor, !is.na(richness_est)) |>
+    dplyr::mutate(relative_gap = (richness_est - n_species) / n_species)
 
   # Sweep completeness values using a narrow window (±0.05) and find the
   # lowest completeness where the chosen quantile of the gap drops below

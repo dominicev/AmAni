@@ -60,7 +60,7 @@ if (exists(".amani_animal_model_dir")) {
   animalModelDir <- paste0(dirname(getwd()), "/2-ModellingAnimals/output/madre de dios analysis results")
 }
 sim_files <- list.files(
-  path = animalModelDir, pattern = "^simulatedOccurencesForAnimal.*\\.rds$",
+  path = animalModelDir, pattern = "^simulatedOccurencesForAnimal\\.rds$",
   full.names = TRUE
 )
 simAnimalObj <- readRDS(sim_files[1])
