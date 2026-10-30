@@ -785,7 +785,7 @@ source("AmAni.manager.R")  # reload the pipeline functions (rm removed them)
 coresNow <- 55           # re-set the core count (rm removed it too)
 
 #run_extinction_model("lepidoptera")
-run_extinction_model("butterflies")
+#run_extinction_model("butterflies")
 run_extinction_model("beetles")
 run_extinction_model("DungBeetles")
 run_extinction_model("other_hymenoptera")
@@ -820,7 +820,7 @@ coresNow <- 55           # re-set the core count (rm removed it too)
 run_extinction_model("squamata")
 run_extinction_model("flies")
 
-# --- Free memory between organisms ---
+gg wp# --- Free memory between organisms ---
 rm(list = ls())          # wipes the global env, incl. run_animal_model and coresNow
 gc(full = TRUE)          # return the memory to the OS
 source("AmAni.manager.R")  # reload the pipeline functions (rm removed them)
@@ -938,10 +938,10 @@ summarize_organism("moths")
 summarize_organism("butterflies")
 summarize_organism("beetles")
 summarize_organism("DungBeetles")
-summarize_organism("hymenoptera")
+#summarize_organism("hymenoptera")
 summarize_organism("other_hymenoptera")
 
-summarize_organism("bees")
+#summarize_organism("bees")
 summarize_organism("flies")
 summarize_organism("frogs")
 summarize_organism("tyrannidae")

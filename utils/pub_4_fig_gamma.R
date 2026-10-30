@@ -3,6 +3,7 @@
 #
 #   gamma_treemap_organisms()  auto-pick organisms, comparing each umbrella
 #                              dataset with its finer-grained alternatives
+#   apply_hymenoptera_ratios()  ratio-based ants / bees / other Hymenoptera
 #   fig_gamma_treemap()        square divided into one rectangle per organism
 #                              (area ~ richness), split observed vs unobserved
 #   .spiral_layout()           clockwise spiral slice layout used by the treemap
@@ -52,19 +53,33 @@
 # allCombined). For umbrella datasets, the richer of the umbrella vs its
 # alternatives is kept: if the alternatives together are larger, they replace
 # the umbrella and get an asterisk next to their names.
+# Lepidoptera is always shown as moths + butterflies (the umbrella
+# Lepidoptera dataset is never drawn).
 GAMMA_TREEMAP_BASE <- c(
   "Flies", "Hemiptera", "Odonata-curated", "Mantodea", "Termites",
-  "Cockroaches.Curated",
+  "Cockroaches.Curated", "Moths", "Butterfl-curated",
   "Frogs", "Mammals", "Squamates", "Antbirds", "Tyrannidae", "Finches")
+
+# Ant and bee datasets: drawn as their own tiles and, in ratio mode, the
+# basis for "Other Hymenoptera" (see apply_hymenoptera_ratios()).
+# Ants_curated has no gamma estimate, so Ants_combined is used.
+HYMENOPTERA_PARTS <- c("Ants_combined", "Bees_combined")
 
 # Each entry: umbrella dataset first, then its alternatives
 GAMMA_TREEMAP_PAIRS <- list(
-  c("Hymenoptera", "Ants_curated", "Bees_combined"),
-  c("Beetles", "DungBeetles"),
-  c("Lepidoptera", "Butterfl-curated")
+  c("Hymenoptera", HYMENOPTERA_PARTS),
+  c("Beetles", "DungBeetles")
 )
 
 gamma_treemap_organisms <- function(pub, value_col = "gamma_lower") {
+  # Ratio-based Hymenoptera (see apply_hymenoptera_ratios()): ants, bees and
+  # "Other Hymenoptera" are three plain slices; the umbrella dataset is not drawn
+  pairs <- GAMMA_TREEMAP_PAIRS
+  base <- GAMMA_TREEMAP_BASE
+  if (isTRUE(pub$hymenoptera_from_ratios)) {
+    pairs <- Filter(\(p) p[1] != "Hymenoptera", pairs)
+    base <- c(base, HYMENOPTERA_PARTS, HYMENOPTERA_OTHER)
+  }
   val <- function(org) {
     i <- match(org, pub$summary$organism)
     if (is.na(i)) NA_real_ else pub$summary[[value_col]][i]
@@ -83,9 +98,68 @@ gamma_treemap_organisms <- function(pub, value_col = "gamma_lower") {
     tibble::tibble(organism = alts_ok, starred = starred)
   }
   dplyr::bind_rows(
-    c(list(tibble::tibble(organism = GAMMA_TREEMAP_BASE, starred = FALSE)),
-      purrr::map(GAMMA_TREEMAP_PAIRS, resolve))
+    c(list(tibble::tibble(organism = base, starred = FALSE)),
+      purrr::map(pairs, resolve))
   )
+}
+
+# --- Hymenoptera from the parasitoid : non-parasitic ratio ---------------------------
+
+# Hymenoptera model estimates are unreliable, so the unmodelled bulk of the
+# order is estimated from the ratio of parasitoid to non-parasitic species
+# (Forbes et al. 2018, see PUB_SETTINGS$hymenoptera_ratios). Ants and bees
+# (the well-modelled non-parasitic clades) keep their own estimates, and
+#   Other Hymenoptera = (ants + bees) * (parasitoid / non-parasitic).
+# The ratio is the mean of the paper's estimates. Applied to `value_col` and
+# every column in `range_cols`. Observed species for "Other Hymenoptera" come
+# from the Other_hymenoptera dataset if present; otherwise Hymenoptera-dataset
+# observed minus observed ants and bees (floored at 0; 0 if neither exists).
+# Returns `pub` with an "Other Hymenoptera" row added to pub$summary and
+# pub$organisms, and pub$hymenoptera_from_ratios = TRUE.
+HYMENOPTERA_OTHER <- "Other Hymenoptera"
+
+apply_hymenoptera_ratios <- function(pub,
+                                     ratios = PUB_SETTINGS$hymenoptera_ratios,
+                                     value_col = "gamma_lower",
+                                     range_cols = c("gamma_lower", "gamma_upper")) {
+  if (is.null(ratios)) return(pub)
+  stopifnot(is.numeric(ratios$parasitoid), is.numeric(ratios$nonparasitic),
+            length(ratios$parasitoid) == length(ratios$nonparasitic))
+  ratio <- mean(ratios$parasitoid / ratios$nonparasitic)
+
+  s <- pub$summary |> dplyr::filter(organism != HYMENOPTERA_OTHER)
+  parts <- s[match(HYMENOPTERA_PARTS, s$organism), , drop = FALSE]
+  # Drop parts that are missing or have no estimate, so they can't silently
+  # contribute 0 to the scaled total
+  parts <- parts[!is.na(parts$organism) & !is.na(parts[[value_col]]), , drop = FALSE]
+  if (nrow(parts) == 0) stop(paste(HYMENOPTERA_PARTS, collapse = " / "),
+                             " not found in pub$summary (or no estimate)",
+                             call. = FALSE)
+  if (nrow(parts) == 1) warning("Only ", parts$organism, " found; Other Hymenoptera ",
+                                "is scaled from it alone", call. = FALSE)
+
+  hym <- s[match("Hymenoptera", s$organism), , drop = FALSE]
+  row <- parts[1, , drop = FALSE]
+  row[1, setdiff(names(row), c("organism_dir", "organism"))] <- NA
+  row$organism <- HYMENOPTERA_OTHER
+  row$organism_dir <- HYMENOPTERA_OTHER
+
+  for (col in unique(c(value_col, range_cols)))
+    row[[col]] <- sum(parts[[col]], na.rm = TRUE) * ratio
+  other_obs <- s$observed_spp[match("Other_hymenoptera", s$organism)]
+  obs_h <- if (nrow(hym) == 1) hym$observed_spp else NA_real_
+  row$observed_spp <- if (!is.na(other_obs)) other_obs else if (is.na(obs_h)) 0 else
+    max(obs_h - sum(parts$observed_spp, na.rm = TRUE), 0)
+
+  pub$summary <- dplyr::bind_rows(s, row)
+  pub$hymenoptera_from_ratios <- TRUE
+  # Taxon group / colour come from pub$organisms
+  o <- pub$organisms |> dplyr::filter(organism != HYMENOPTERA_OTHER)
+  o1 <- o[match(parts$organism[1], o$organism), , drop = FALSE]
+  o1$organism <- HYMENOPTERA_OTHER
+  o1$organism_dir <- HYMENOPTERA_OTHER
+  pub$organisms <- dplyr::bind_rows(o, o1)
+  pub
 }
 
 # --- Treemap ------------------------------------------------------------------------
@@ -117,7 +191,10 @@ gamma_treemap_organisms <- function(pub, value_col = "gamma_lower") {
 #   - total predicted + "Max:" (upper end of `range_cols`): centred in the
 #     space right of the silhouette
 # Text is sized to fit its tile at the final width `width_mm`; anything
-# that would fall below `min_text_pt` is dropped. `organisms`: tibble from
+# that would fall below `min_text_pt` is dropped. If `hymenoptera_ratios` is
+# non-NULL (default: PUB_SETTINGS$hymenoptera_ratios) Hymenoptera is shown as
+# three tiles (ants, bees, other) with the total estimated from the parasitoid : non-parasitic ratio instead of the model (see
+# apply_hymenoptera_ratios()); set it to NULL for the original behaviour. `organisms`: tibble from
 # gamma_treemap_organisms(), a character vector, or NULL (auto-pick).
 fig_gamma_treemap <- function(pub,
                               value_col   = "gamma_lower",
@@ -129,7 +206,11 @@ fig_gamma_treemap <- function(pub,
                               sil_max_w   = 0.45,
                               width_mm    = PUB_SETTINGS$fig_width_double,
                               min_text_pt = 4,
-                              max_text_pt = 14) {
+                              max_text_pt = 14,
+                              hymenoptera_ratios = PUB_SETTINGS$hymenoptera_ratios) {
+  # Replace the modelled Hymenoptera estimate with the ratio-based one
+  if (!is.null(hymenoptera_ratios))
+    pub <- apply_hymenoptera_ratios(pub, hymenoptera_ratios, value_col, range_cols)
   if (is.null(organisms)) {
     organisms <- gamma_treemap_organisms(pub, value_col)
   } else if (is.character(organisms)) {

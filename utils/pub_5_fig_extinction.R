@@ -7,6 +7,21 @@
 
 AMANI_IUCN_EXT_COL <- "#4A0A02"
 
+# Organisms for every Figure 3 panel: the Figure 2 set (fig_gamma_treemap();
+# Lepidoptera as moths + butterflies, ants and bees as their own datasets)
+# plus the umbrella Hymenoptera dataset. "Other Hymenoptera" is left out: its
+# richness comes from the parasitoid ratio, not a model, so it has no
+# extinction results. Ants and bees are nested in Hymenoptera, so pooled
+# totals (the IUCN panel) count their species twice once they have IUCN data.
+fig3_organisms <- function(pub, value_col = "gamma_lower",
+                           hymenoptera_ratios = PUB_SETTINGS$hymenoptera_ratios) {
+  if (!is.null(hymenoptera_ratios))
+    pub <- apply_hymenoptera_ratios(pub, hymenoptera_ratios, value_col)
+  orgs <- setdiff(gamma_treemap_organisms(pub, value_col = value_col)$organism,
+                  HYMENOPTERA_OTHER)
+  union(orgs, intersect("Hymenoptera", pub$summary$organism))
+}
+
 # Mean species count per IUCN category for the Figure 2 organisms: each
 # organism's counts are summed over models x scenarios and divided by the
 # number of simulations, then (if `by` is NULL) summed over organisms. CR/EX
@@ -14,7 +29,14 @@ AMANI_IUCN_EXT_COL <- "#4A0A02"
 # range loss). Ext is the modelled species loss (pub$extinction$median_spp_lost)
 # for the same organism x model x scenario; CR = CR/EX - Ext.
 .iucn_pooled_counts <- function(pub, value_col = "gamma_lower", by = NULL) {
-  orgs <- gamma_treemap_organisms(pub, value_col = value_col)$organism
+  orgs <- fig3_organisms(pub, value_col)
+  no_iucn <- setdiff(orgs, pub$iucn$organism)
+  # Warn once per figure (fig_iucn_stack() calls this with by = NULL first)
+  if (length(no_iucn) > 0 && is.null(by))
+    warning("No IUCN classification data (missing ",
+            "*iucn_threat_classification_data.rds) for: ",
+            paste(no_iucn, collapse = ", "),
+            ". These organisms are absent from the IUCN panel.", call. = FALSE)
   key <- c("organism", "model", "scenario")
 
   per_org <- pub$iucn |>
@@ -265,7 +287,7 @@ fig_iucn_stack <- function(pub, value_col = "gamma_lower", gap = 0.04,
 # Species lost per organism x model x scenario (Figure 2 organisms) with the
 # gamma richness it is expressed against and the taxon group.
 .extinction_loss_data <- function(pub, value_col = "gamma_lower") {
-  orgs <- gamma_treemap_organisms(pub, value_col = value_col)$organism
+  orgs <- fig3_organisms(pub, value_col)
   pub$extinction |>
     dplyr::filter(organism %in% orgs) |>
     dplyr::inner_join(

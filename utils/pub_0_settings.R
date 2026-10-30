@@ -24,6 +24,22 @@ PUB_SETTINGS <- list(
     scenarios = c("FreqUnder", "FreqBoundary", "FreqCalibrated", "FreqOver")
   ),
 
+  # --- Hymenoptera estimate -----------------------------------------------------
+  # Fig 2 shows Hymenoptera as ants (Ants_combined), bees (Bees_combined) and
+  # "Other Hymenoptera", where
+  # Other = (ants + bees) * parasitoid / non-parasitic species. The ratio is
+  # the mean over the three paired estimates below (ratios ~13.8-14.2, mean 14.05).
+  # Source: Forbes AA, Bagley RK, Beer MA, Hippee AC, Widmayer HA (2018)
+  # Quantifying the unquantifiable: why Hymenoptera, not Coleoptera, is the
+  # most speciose animal order. BMC Ecology 18:21. doi:10.1186/s12898-018-0176-x
+  # Estimated species richness; element i of each vector is the same estimate.
+  # Set to NULL to use the modelled Hymenoptera instead.
+  hymenoptera_ratios = list(
+    nonparasitic = c(79980, 58900, 29450),
+    parasitoid   = c(1107487, 833590, 416795),
+    source       = "Forbes et al. 2018, BMC Ecology 18:21"
+  ),
+
   # --- IUCN categories ---------------------------------------------------------
   iucn_categories = c("NT/LC", "VU", "EN", "CR/EX"),
 

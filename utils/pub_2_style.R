@@ -7,7 +7,7 @@
 #   AMANI_* colour sets   fixed palettes (taxon group, filter stage, IUCN)
 #   organism_palette()    distinct per-organism colours, stable across figures
 #   organism_levels()     canonical organism ordering (group, then gamma size)
-#   ORGANISM_CLUSTER      coarse clusters for ordering related organisms
+#   ORGANISM_TAXONOMY     classification (order, clade) + taxonomic display order
 #   ORGANISM_PHYLOPIC / PHYLOPIC_UUIDS   PhyloPic silhouettes
 #   AMANI_MAP_STYLE + .map_context() / .basemap_*()   shared map layers
 #   save_pub_fig()        writes a figure as PDF (cairo) + PNG
@@ -131,7 +131,10 @@ ORGANISM_PHYLOPIC <- c(
   Frogs               = "Anura",
   Hemiptera           = "Hemiptera",
   Hymenoptera         = "Hymenoptera",
+  `Other Hymenoptera` = "Hymenoptera",
   Lepidoptera         = "Lepidoptera",     # Actias luna
+  Moths               = "Lepidoptera",     # Actias luna is a moth
+  Other_hymenoptera   = "Hymenoptera",
   Mammals             = "Mammalia",       # Cebus
   Mantodea            = "Mantodea",
   Odonata             = "Odonata",
@@ -183,27 +186,44 @@ organism_levels <- function(pub) {
     dplyr::pull(organism)
 }
 
-# Coarse clusters within taxon groups so related organisms sit together in
-# fig_cell_distributions() (butterflies with butterflies, birds with birds,
-# ...). The vector gives the cluster-level panel order; organisms missing from
-# the mapping fall back to their own name (own cluster).
-ORGANISM_CLUSTER <- c(
-  Bees_combined       = "Bees",
-  Cockroaches.Curated = "Cockroaches",
-  Beetles             = "Beetles",
-  Hemiptera           = "Bugs",
-  Lepidoptera         = "Lepidoptera",
-  Butterflies         = "Lepidoptera",
-  `Butterfl-curated`  = "Lepidoptera",
-  `Odonata-curated`   = "Odonata",
-  `Odonata-combined`  = "Odonata",
-  Odonata             = "Odonata",
-  Frogs               = "Frogs",
-  Finches             = "Birds",
-  Antbirds            = "Birds",
-  Tyrannidae          = "Birds",
-  Mammals             = "Mammals",
-  Squamata            = "Squamates"
+# Taxonomic classification used to order organisms in fig_cell_distributions()
+# so related datasets sit together (all Hymenoptera, then Coleoptera, ... with
+# the Holometabola contiguous). Row order IS the display order: insects from
+# Palaeoptera to Holometabola, then vertebrates. Within an order the umbrella
+# dataset comes first, followed by its subsets. Organisms missing from the
+# table go last within their taxon group (by descending gamma).
+ORGANISM_TAXONOMY <- tibble::tribble(
+  ~organism,             ~order,         ~clade,
+  "Odonata",             "Odonata",      "Palaeoptera",
+  "Odonata-combined",    "Odonata",      "Palaeoptera",
+  "Odonata-curated",     "Odonata",      "Palaeoptera",
+  "Mantodea",            "Mantodea",     "Polyneoptera",
+  "Cockroaches.Curated", "Blattodea",    "Polyneoptera",
+  "cockroaches",         "Blattodea",    "Polyneoptera",
+  "Termites",            "Blattodea",    "Polyneoptera",
+  "Hemiptera",           "Hemiptera",    "Paraneoptera",
+  "Miridae",             "Hemiptera",    "Paraneoptera",
+  "Hymenoptera",         "Hymenoptera",  "Holometabola",
+  "Ants_combined",       "Hymenoptera",  "Holometabola",
+  "Ants_curated",        "Hymenoptera",  "Holometabola",
+  "Bees_combined",       "Hymenoptera",  "Holometabola",
+  "Bees",                "Hymenoptera",  "Holometabola",
+  "Other_hymenoptera",   "Hymenoptera",  "Holometabola",
+  "Other Hymenoptera",   "Hymenoptera",  "Holometabola",
+  "Beetles",             "Coleoptera",   "Holometabola",
+  "DungBeetles",         "Coleoptera",   "Holometabola",
+  "Lepidoptera",         "Lepidoptera",  "Holometabola",
+  "Moths",               "Lepidoptera",  "Holometabola",
+  "Butterflies",         "Lepidoptera",  "Holometabola",
+  "Butterfl-curated",    "Lepidoptera",  "Holometabola",
+  "Flies",               "Diptera",      "Holometabola",
+  "Frogs",               "Anura",        "Amphibia",
+  "Squamates",           "Squamata",     "Reptilia",
+  "Squamata",            "Squamata",     "Reptilia",
+  "Antbirds",            "Passeriformes", "Aves",
+  "Tyrannidae",          "Passeriformes", "Aves",
+  "Finches",             "Passeriformes", "Aves",
+  "Mammals",             "Mammalia",     "Mammalia"
 )
 
 # --- Sequential (richness / map) scales ------------------------------------------

@@ -493,16 +493,16 @@ fig_cell_distributions <- function(pub,
     filter(organism %in% lvls, !is.na(value)) |>
     left_join(distinct(pub$organisms, organism, taxon_group), by = "organism")
 
-  # Column order: arthropods left, vertebrates right; within each group,
-  # related organisms cluster together via ORGANISM_CLUSTER, then descending
-  # gamma within those clusters
+  # Column order: invertebrates left, vertebrates right; within each group,
+  # taxonomic order from ORGANISM_TAXONOMY (Hymenoptera together, Lepidoptera
+  # together, Holometabola contiguous, ...). Unclassified organisms go last
+  # within their group, by descending gamma
   ord <- dist |>
     distinct(organism, taxon_group) |>
-    mutate(cluster = unname(coalesce(ORGANISM_CLUSTER[organism], organism)),
+    mutate(tax_rank = match(organism, ORGANISM_TAXONOMY$organism),
            gamma = pub$summary$gamma_best[match(organism, pub$summary$organism)]) |>
     arrange(factor(taxon_group, levels = c("Invertebrates", "Vertebrates")),
-            factor(cluster, levels = unique(ORGANISM_CLUSTER)),
-            desc(gamma)) |>
+            is.na(tax_rank), tax_rank, desc(gamma)) |>
     pull(organism)
   dist <- mutate(dist, organism = factor(organism, ord))
 
