@@ -141,6 +141,27 @@ build_dataset_summary_figure <- function(
 
 # --- Cell-filter report ---------------------------------------------------------
 
+# Replace plant Chao1 completeness in a cell-filter report with the value from
+# the RAW filtered plant counts. Reports saved before this fix computed it from
+# the filled plant data (fill_plants = TRUE), which is exactly 1 in every cell.
+# Uses collect_plant_completeness_raw() from pub_1_collect.R.
+use_raw_plant_completeness <- function(cfr,
+    counts_path = file.path(project_root, "1-FilteringPlantData", "output",
+                            "species_counts4_filtered.rds")) {
+  raw <- collect_plant_completeness_raw(counts_path) |>
+    dplyr::select(grid_id, plant_completeness = plant_completeness_raw)
+
+  cfr$plant <- cfr$plant |>
+    dplyr::select(-dplyr::any_of("plant_completeness")) |>
+    dplyr::left_join(raw, by = "grid_id")
+  cfr$delta <- cfr$delta |>
+    dplyr::select(-dplyr::any_of(c("plant_completeness", "delta_completeness"))) |>
+    dplyr::left_join(raw, by = "grid_id") |>
+    dplyr::mutate(delta_completeness = plant_completeness - animal_completeness)
+  cfr$plant_completeness_source <- "raw"
+  cfr
+}
+
 # Seven maps: animal/plant completeness, richness, occurrences, plus the
 # plant-minus-animal completeness difference.
 build_cell_filter_map_panels <- function(cfr) {
@@ -155,6 +176,20 @@ build_cell_filter_map_panels <- function(cfr) {
     name = "Animal cell"
   )
 
+  # Retained/filtered outline drawn as a layer BEHIND the fill, so only a thin
+  # halo shows around each cell and the fill colour stays readable. Filtered
+  # cells are drawn first and retained cells (outline + fill) on top of them.
+  outlined_fill <- function(fill_var) {
+    cell_layers <- function(keep) {
+      subset_cells <- function(d) d[d$retained %in% keep, ]
+      list(
+        geom_sf(data = subset_cells, aes(color = retained), fill = NA, linewidth = 0.6),
+        geom_sf(data = subset_cells, aes(fill = .data[[fill_var]]), color = NA)
+      )
+    }
+    c(cell_layers(c(FALSE, NA)), cell_layers(TRUE))
+  }
+
   map_theme <- theme_minimal(base_size = 9) +
     theme(plot.title = element_text(face = "bold", size = 9),
           legend.key.size = grid::unit(0.4, "cm"))
@@ -162,7 +197,7 @@ build_cell_filter_map_panels <- function(cfr) {
   map_pair <- function(an_var, pl_var, title, fill_name, trans = "identity") {
     list(
       ggplot(animal_cells) +
-        geom_sf(aes(fill = .data[[an_var]], color = retained), linewidth = 0.4) +
+        outlined_fill(an_var) +
         scale_fill_viridis_c(name = fill_name, trans = trans) +
         outline_scale +
         labs(title = paste("Animals:", title)) +
@@ -176,7 +211,7 @@ build_cell_filter_map_panels <- function(cfr) {
   }
 
   p_delta <- ggplot(delta_cells) +
-    geom_sf(aes(fill = delta_completeness, color = retained), linewidth = 0.4) +
+    outlined_fill("delta_completeness") +
     scale_fill_gradient2(
       name = "Plant - animal\ncompleteness",
       low = "firebrick", mid = "white", high = "steelblue", midpoint = 0,
@@ -196,7 +231,9 @@ build_cell_filter_map_panels <- function(cfr) {
 
 build_completeness_correlation_plot <- function(cfr) {
   d <- sf::st_drop_geometry(cfr$delta) |>
-    dplyr::filter(!is.na(plant_completeness), !is.na(animal_completeness))
+    dplyr::filter(!is.na(plant_completeness), !is.na(animal_completeness)) |>
+    # Retained points drawn last (on top)
+    dplyr::arrange(retained)
   if (nrow(d) < 3) return(NULL)
 
   pearson  <- suppressWarnings(cor(d$plant_completeness, d$animal_completeness))
@@ -207,10 +244,14 @@ build_completeness_correlation_plot <- function(cfr) {
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
     geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
                 colour = "black", fill = "grey80", linewidth = 0.6) +
-    geom_point(aes(colour = retained), size = 2.5, alpha = 0.8) +
+    geom_point(aes(colour = retained, alpha = retained), size = 2.5) +
     scale_colour_manual(values = c(`TRUE` = "#2c7fb8", `FALSE` = "grey60"),
                         labels = c(`TRUE` = "Retained", `FALSE` = "Filtered out"),
                         name = "Animal cell") +
+    # Same name/labels as the colour scale so the two legends merge
+    scale_alpha_manual(values = c(`TRUE` = 0.8, `FALSE` = 0.4),
+                       labels = c(`TRUE` = "Retained", `FALSE` = "Filtered out"),
+                       name = "Animal cell") +
     annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.4, size = 3.5,
              label = sprintf("Pearson r = %.2f\nSpearman rho = %.2f\nn = %d cells",
                              pearson, spearman, nrow(d))) +
@@ -236,6 +277,9 @@ write_cell_filter_report_pdf <- function(organism, org_am, org_out, timestamp,
     return(NULL)
   }
   cfr <- readRDS(cfr_path)
+  if (!identical(cfr$plant_completeness_source, "raw")) {
+    cfr <- use_raw_plant_completeness(cfr)
+  }
 
   ds_inputs <- load_dataset_summary_figure_inputs(org_am)
   stats_fig <- if (!is.null(ds_inputs)) {

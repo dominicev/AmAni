@@ -79,6 +79,9 @@ output_root <- file.path(project_root, "output")
 # --- Load GBIF cleaning utility ---------------------------------------------
 source(file.path(stage_dirs$animals, "scripts", "00_cleanGBIF.R"))
 
+# --- Load per-organism IUCN threat classification ----------------------------
+source(file.path(stage_dirs$model, "scripts", "utils", "classify_iucn_organism.R"))
+
 
 # --- Helper: verify upstream outputs ----------------------------------------
 
@@ -1072,6 +1075,9 @@ run_extinction_model <- function(organism,
     message("\nSummarizing results...")
     source("scripts/03_summarize_results.R", local = FALSE)
   }
+
+  # IUCN threat classification (reads the summaries written above)
+  classify_iucn_organism(organism, extinction_dir = dirs$extinction_model)
 
   message("\nExtinction modelling complete.")
 }

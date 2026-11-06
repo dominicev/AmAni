@@ -28,17 +28,10 @@
 ###Notes:
 ###
 ###Things to do soon:
-### 1. Make final figures MOSTLY DONE
-### 3. Incorporate ant data DONE
-### 4. Implement plant-animal correlation maximizer
-### 5. Include retained data plots in organism summary<<<DONE
-### 6. Fix bug in max min confidence intervals
-### 7. Sync with one drive
-### 8. Update on github
 ### 9. Add option to remove morphotypes
-### 10. Check why no vulnerable ot endangered species are being found
-### 11. Fix filter maps
-### 
+### 10. Cross-check mammal data against Tigga's recommendations
+### 11. Incorporate senstivity and uncertainty results into the main figure
+### 12. Confirm outlier information for ants (ask Jerome, and compare w/ vs/ w/o morphotypes, and w/ vs/ w/out GBIF)
 ### 
 ###Things to do later:
 ### 1. New simulations for linear model
@@ -47,6 +40,8 @@
 ### 4. Incorporate new Peru Blattodea data
 ### 5. Use iChao1 instead of Chao1?
 ### 6. Consider options to speed up large range simulation (i.e., parallelizing the small species ranges individually first, and then breaking up inndividual large ranges across multple cores )....i noticed that moths parallelizes but flies didn't...so maybe this can be addressed
+### 7. Implement plant-animal correlation maximizer
+
 
 
 
@@ -834,8 +829,8 @@ source("4-ExtModeller/scripts/utils/iucn_threat_classification.R")
 extinction_model_organisms <- c(
   "butterfl-curated", "odonata", "odonata-combined", "odonata-curated",
   "hemiptera", "moths", "butterflies", "beetles", "DungBeetles",
-  "hymenoptera", "bees", "flies", "frogs", "tyrannidae", "antbirds",
-  "finches", "mammals", "cockroaches", "squamata"
+  "hymenoptera", "bees_combined", "flies", "frogs", "tyrannidae", "antbirds",
+  "finches", "mammals", "cockroaches", "squamata", "termites", "Mantodea"
 )
 
 for (organism in extinction_model_organisms) {

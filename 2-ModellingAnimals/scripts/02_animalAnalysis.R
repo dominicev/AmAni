@@ -432,19 +432,10 @@ if (exists(".amani_filter_summary", envir = .GlobalEnv) &&
 
   animal_cells <- .amani_filter_summary$cell_table
 
-  # Plant per-cell stats for every plant cell (Chao1, same formula as the
-  # optional plant completeness filter below). Occurrence counts live in
-  # `count` for the raw plant data and `n_records` for the filled/interpolated
-  # data, so pick whichever column exists.
-  #
-  # NOTE (downstream usage): when fill_plants = TRUE this table is computed
-  # from the FILLED/interpolated plant data, whose inflated record counts
-  # leave ~no singletons per cell, so plant_completeness collapses to exactly
-  # 1 in every cell. Any DOWNSTREAM use of plant completeness (figures,
-  # summaries, the delta_completeness panel below) that is meant to measure
-  # actual sampling quality should instead be calculated from the RAW
-  # filtered counts (1-FilteringPlantData/output/species_counts4_filtered.rds,
-  # same formula, keyed by grid_id) — NOT from the filled value computed here.
+  # Plant per-cell stats for every plant cell. Richness and occurrences come
+  # from the plant data used in this run (species_counts: filled when
+  # fill_plants = TRUE). Occurrence counts live in `count` for the raw plant
+  # data and `n_records` for the filled/interpolated data.
   plant_tbl <- species_counts |> sf::st_drop_geometry()
   cnt_col <- if ("count" %in% names(plant_tbl)) "count" else "n_records"
   plant_cells <- plant_tbl |>
@@ -452,17 +443,33 @@ if (exists(".amani_filter_summary", envir = .GlobalEnv) &&
     dplyr::summarise(
       plant_richness    = dplyr::n_distinct(scientificName),
       plant_occurrences = sum(.data[[cnt_col]]),
-      f1 = sum(.data[[cnt_col]] == 1),
-      f2 = sum(.data[[cnt_col]] == 2),
+      .groups = "drop"
+    )
+  rm(plant_tbl)
+
+  # Chao1 completeness always comes from the RAW filtered counts: the filled
+  # data's inflated record counts leave no singletons, so its Chao1
+  # completeness is exactly 1 in every cell. Same formula as the optional
+  # plant completeness filter below. Cells absent from the raw data get NA.
+  raw_tbl <- readRDS(file.path(dataDir, "species_counts4_filtered.rds")) |>
+    sf::st_drop_geometry()
+  raw_cnt_col <- if ("count" %in% names(raw_tbl)) "count" else "n_records"
+  plant_completeness_raw <- raw_tbl |>
+    dplyr::group_by(grid_id) |>
+    dplyr::summarise(
+      s_obs = dplyr::n_distinct(scientificName),
+      f1 = sum(.data[[raw_cnt_col]] == 1),
+      f2 = sum(.data[[raw_cnt_col]] == 2),
       .groups = "drop"
     ) |>
     dplyr::mutate(
-      plant_chao1 = plant_richness + dplyr::if_else(
-        f2 > 0, f1^2 / (2 * f2), f1 * (f1 - 1) / 2
-      ),
-      plant_completeness = plant_richness / plant_chao1
+      plant_completeness = s_obs / (s_obs + dplyr::if_else(
+        f2 > 0, f1^2 / (2 * f2), f1 * (f1 - 1) / 2))
     ) |>
-    dplyr::select(-f1, -f2, -plant_chao1)
+    dplyr::select(grid_id, plant_completeness)
+  rm(raw_tbl)
+  plant_cells <- plant_cells |>
+    dplyr::left_join(plant_completeness_raw, by = "grid_id")
 
   # Polygon geometry for plant cells; use grid polygons for animal cells too
   # if the stored geometry is not polygonal
@@ -482,7 +489,10 @@ if (exists(".amani_filter_summary", envir = .GlobalEnv) &&
     dplyr::inner_join(sf::st_drop_geometry(plant_cells), by = "grid_id") |>
     dplyr::mutate(delta_completeness = plant_completeness - animal_completeness)
 
-  saveRDS(list(animal = animal_cells, plant = plant_cells_sf, delta = delta_cells),
+  # plant_completeness_source flags files whose plant completeness is already
+  # raw-count based (older files used the filled data; see func_report_plots.R)
+  saveRDS(list(animal = animal_cells, plant = plant_cells_sf, delta = delta_cells,
+               plant_completeness_source = "raw"),
           file.path(plot_data_dir, "plotdata_cell_filter_report.rds"))
 
   outline_scale <- scale_color_manual(
@@ -1609,8 +1619,8 @@ if (!is.null(gammaRichnessFromSamplingModel_best)) {
 # NOTE: completeness here is computed from the RAW filtered counts
 # (species_counts4_filtered.rds), not species_counts, because species_counts is
 # the FILLED plant data when fill_plants = TRUE (completeness would be ~1).
-# The plant_completeness column in the cell-filter report above still uses
-# species_counts.
+# The plant_completeness column in the cell-filter report above also uses the
+# raw counts.
 
 #NOTE: Should this be incorporated earlier in the workflow? 
 
